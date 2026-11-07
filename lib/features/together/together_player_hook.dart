@@ -112,15 +112,20 @@ class TogetherPlayerHook {
     _attached = true;
     service.addListener(_onServiceChanged);
     service.attachMedia(media);
+    // The single root-mounted orb reads its Start action from the service:
+    // while this player is open, Start on the orb goes live from this
+    // engine. Cleared in [dispose] so a stale engine is never started.
+    service.registerOrbStartAction(goLive);
     _onServiceChanged();
   }
 
-  /// Host: goes live at the engine's current position.
+  /// Host: goes live at the engine's current position and transport state.
   void goLive() {
     final value = controller.value;
     service.goLive(
       positionMs: value.position.inMilliseconds,
       durationMs: value.duration.inMilliseconds,
+      playing: value.isPlaying,
     );
   }
 
@@ -212,6 +217,7 @@ class TogetherPlayerHook {
     if (!_attached) return;
     _attached = false;
     service.removeListener(_onServiceChanged);
+    service.registerOrbStartAction(null);
   }
 }
 

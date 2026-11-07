@@ -14,8 +14,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'core/theme/theme_provider.dart';
-import 'core/theme/artwork_palette.dart';
-import 'core/theme/artwork_ambience.dart';
+import 'features/together/presentation/floating_together_orb.dart';
 import 'core/router/app_router.dart';
 import 'core/theme/app_theme.dart';
 import 'core/storage/storage_service.dart';
@@ -307,7 +306,6 @@ class _MyAppState extends ConsumerState<MyApp> {
     final themeMode = ref.watch(appThemeModeProvider);
     final appRouter = ref.watch(appRouterProvider);
     final locale = ref.watch(localeProvider);
-    final artworkAccent = ref.watch(artworkAccentProvider);
     final profileAsync = ref.watch(deviceProfileProvider);
 
     // Mirror the resolved device profile into TmdbConfig's static cache so
@@ -335,12 +333,9 @@ class _MyAppState extends ConsumerState<MyApp> {
           debugShowCheckedModeBanner: false,
           themeMode: themeMode,
           theme: lightDynamic != null
-              ? AppTheme.createLightTheme(lightDynamic, accent: artworkAccent)
-              : AppTheme.createLightTheme(null, accent: artworkAccent),
-          darkTheme: AppTheme.createDarkTheme(
-            darkScheme,
-            accent: artworkAccent,
-          ),
+              ? AppTheme.createLightTheme(lightDynamic)
+              : AppTheme.createLightTheme(null),
+          darkTheme: AppTheme.createDarkTheme(darkScheme),
           routerConfig: appRouter,
           locale: locale,
           localizationsDelegates: const [
@@ -368,10 +363,6 @@ class _MyAppState extends ConsumerState<MyApp> {
               child: result,
             );
 
-            // Keep the ambience outside the navigation content so every
-            // route, dialog, sheet, and TV shell shares the same animated
-            // artwork-derived atmosphere.
-            result = ArtworkAmbience(accent: artworkAccent, child: result);
 
             if (!kIsWeb &&
                 (Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
@@ -397,6 +388,22 @@ class _MyAppState extends ConsumerState<MyApp> {
             // `MaterialApp.router`'s builder, i.e. around the Navigator that
             // builds the player route.
             result = M3ToastOverlay(child: result);
+
+            // The "Enjoy Together" orb, mounted ONCE above the router so it
+            // is visible the whole time a room is active and survives every
+            // route push — home / search branches, the details / view-all /
+            // addon routes that sit outside the app shell, and the player.
+            // It self-hides when no room is active, and never shows on TV
+            // (see the orb itself). One mount means one orb: the shell and
+            // the player must not mount their own. Start / chat actions
+            // come from the player via the service while one is open.
+            result = Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Positioned.fill(child: result),
+                const FloatingTogetherOrb(),
+              ],
+            );
 
             // Outermost, so every focus indicator in the app - the browsing
             // UI, the player chrome, dialogs and the toast host alike - reads

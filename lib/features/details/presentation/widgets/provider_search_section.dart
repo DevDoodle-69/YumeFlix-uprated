@@ -52,7 +52,7 @@ class ProviderSearchSection extends ConsumerStatefulWidget {
   /// its focus ring OUTSIDE the card's own box, and the rail's viewport clips -
   /// so with the viewport sized to the cards exactly, the top and bottom of a
   /// hovered card were sliced off. 8 dp is the figure the app's other rails
-  /// reserve for this, and the one [CardFocusAffordance]'s glow blur is tuned
+  /// reserve for this, and the one [CardFocusAffordance]'s shadow blur is tuned
   /// against.
   static const double growthHeadroom = 8;
 

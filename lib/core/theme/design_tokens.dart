@@ -1,77 +1,66 @@
 import 'package:flutter/material.dart';
 
-/// YumeFlix 2.6.0 design tokens — the single source of truth for the new
-/// visual language.
+/// YumeFlix 2.7.0 design tokens — the single source of truth for the
+/// minimal visual language.
 ///
-/// "Liquid glass over deep space": a near-black indigo canvas, one vibrant
-/// gradient ramp (violet → teal → rose), translucent glass surfaces with a
-/// soft top-edge highlight, and large, consistent radii. Every screen in the
-/// app reads its colours, radii, spacing and type from here (via
-/// [AppTheme]) instead of inventing its own numbers.
+/// Near-black charcoal neutrals, white and grey text, hairline borders,
+/// and ONE restrained muted accent (a desaturated slate-blue). No
+/// gradients with colour stops, no coloured halo, no neon anywhere:
+/// every screen reads its colours, radii, spacing and type from here
+/// (via [AppTheme]) instead of inventing its own numbers.
+///
+/// What this replaced (2.6.0 "liquid glass over deep space"): a violet
+/// → teal → rose gradient ramp, amber ratings, poster-sampled colour
+/// colour washes and luminous accents. All of that is gone — the canvas
+/// stays one neutral colour, artwork supplies the only colour on screen.
 class YumeDesign {
   YumeDesign._();
 
   // ── Canvas ──────────────────────────────────────────────────────────
-  /// Deep-space canvas — darker than the 2.5.0 midnight indigo so poster
-  /// artwork and glass panels carry the colour instead of the background.
-  static const Color background = Color(0xFF070A14);
-  static const Color surface = Color(0xFF0E1322);
-  static const Color surfaceRaised = Color(0xFF151B30);
-  static const Color surfaceHighest = Color(0xFF1D2440);
+  /// Near-black charcoal canvas. One dark canvas for the whole app.
+  static const Color background = Color(0xFF0B0D10);
+  static const Color surface = Color(0xFF111417);
+  static const Color surfaceRaised = Color(0xFF181C21);
+  static const Color surfaceHighest = Color(0xFF21262D);
 
-  // ── Gradient accents ────────────────────────────────────────────────
-  /// Hero violet — the primary accent of the 2.6.0 ramp.
-  static const Color violet = Color(0xFF8B7CFF);
-  static const Color violetDeep = Color(0xFF5B4FE8);
+  // ── Accent ──────────────────────────────────────────────────────────
+  /// The single restrained accent: desaturated slate-blue/grey. No halo,
+  /// no gradient. Used sparingly — primary actions and active states
+  /// only; everything else is white, grey or a hairline border.
+  static const Color accent = Color(0xFF6B84A0);
 
-  /// Teal — the cool end of the ramp, used for secondary accents and the
-  /// "watched / synced" states.
-  static const Color teal = Color(0xFF4FD1C5);
-  static const Color tealDeep = Color(0xFF2AA79E);
+  /// Lighter slate-blue for small text and icons on the dark canvas,
+  /// where the fill accent would be too dark to read as a colour.
+  static const Color accentLight = Color(0xFF8AA0B8);
 
-  /// Rose — the warm end of the ramp, used sparingly (LIVE, errors, the
-  /// tail of the hero gradient).
-  static const Color rose = Color(0xFFFF6B8A);
-  static const Color amber = Color(0xFFFFC24B);
-
-  /// The brand ramp, in order. Used for section underlines, progress fills,
-  /// focus glows and the ambient background.
-  static const List<Color> accentRamp = [violet, teal, rose];
-
-  static const LinearGradient accentGradient = LinearGradient(
-    begin: Alignment.centerLeft,
-    end: Alignment.centerRight,
-    colors: accentRamp,
-  );
-
-  static const LinearGradient accentGradientVertical = LinearGradient(
-    begin: Alignment.topCenter,
-    end: Alignment.bottomCenter,
-    colors: [violet, violetDeep],
-  );
+  /// Muted accent fill for selected / active surfaces (e.g. a selected
+  /// chip or progress fill). Flat colour, never a gradient.
+  static const Color accentFill = Color(0xFF6B84A0);
 
   // ── Text ────────────────────────────────────────────────────────────
-  static const Color textPrimary = Color(0xFFF4F6FF);
-  static const Color textSecondary = Color(0xFFB9C0D8);
-  static const Color textMuted = Color(0xFF7B8393);
+  static const Color textPrimary = Color(0xFFF2F4F7);
+  static const Color textSecondary = Color(0xFF9AA3AD);
+  static const Color textMuted = Color(0xFF6E7781);
+
+  // ── Hairlines ───────────────────────────────────────────────────────
+  /// Hairline border: white at low opacity, on any surface.
+  static const Color hairline = Color(0x1AFFFFFF); // white 10%
+  static const Color hairlineStrong = Color(0x29FFFFFF); // white 16%
 
   // ── Glass ───────────────────────────────────────────────────────────
-  /// Fill for a glass panel over artwork or the ambient background.
-  /// Kept translucent so the artwork behind stays visible; the top-edge
-  /// highlight in [glassBorder] is what sells the "glass" read, not opacity.
-  static const Color glassFill = Color(0x26FFFFFF); // white 15%
-  static const Color glassFillStrong = Color(0x33FFFFFF); // white 20%
-  static const Color glassFillDark = Color(0x400A0E1E); // dark 25%
+  /// Fill for a glass panel over artwork. Neutral and restrained: low
+  /// blur, no coloured halo, only where it aids readability over artwork.
+  static const Color glassFill = Color(0x14FFFFFF); // white 8%
+  static const Color glassFillStrong = Color(0x1FFFFFFF); // white 12%
+  static const Color glassFillDark = Color(0x660B0D10); // canvas 40%
 
-  /// A glass border is two tones in one: a brighter top/left edge and a
-  /// dimmer bottom/right edge. [GlassCard] paints it as a single
-  /// [BorderSide] plus a top highlight gradient; the single-side colour
-  /// here is the fallback for plain [Container] borders.
-  static const Color glassBorder = Color(0x33FFFFFF); // white 20%
-  static const Color glassBorderStrong = Color(0x59FFFFFF); // white 35%
+  /// Hairline border for glass panels.
+  static const Color glassBorder = Color(0x1FFFFFFF); // white 12%
+  static const Color glassBorderStrong = Color(0x33FFFFFF); // white 20%
 
-  /// The soft shadow a glass panel casts on the canvas.
-  static List<BoxShadow> glassShadow({double blur = 24, double y = 8}) => [
+  /// The soft shadow a glass panel casts on the canvas. Plain black —
+  /// never a coloured halo.
+  static List<BoxShadow> glassShadow({double blur = 16, double y = 6}) => [
     BoxShadow(
       color: Colors.black.withValues(alpha: 0.35),
       blurRadius: blur,
@@ -79,15 +68,25 @@ class YumeDesign {
     ),
   ];
 
+  /// Neutral black scrim for text legibility over artwork: transparent
+  /// to near-black. The only gradient allowed in the app, and it is
+  /// monochrome by construction.
+  static const LinearGradient legibilityScrim = LinearGradient(
+    begin: Alignment.topCenter,
+    end: Alignment.bottomCenter,
+    colors: [Colors.transparent, Colors.black87],
+    stops: [0.0, 1.0],
+  );
+
   // ── Radii ───────────────────────────────────────────────────────────
-  /// One card language: posters and large panels share [radiusCard];
-  /// chips and pills share [radiusPill]; small controls use [radiusControl].
-  static const double radiusCard = 22;
-  static const double radiusCardSmall = 16;
-  static const double radiusPanel = 28;
-  static const double radiusControl = 12;
+  /// One card language, restrained: cards 16 dp, small cards 12 dp,
+  /// panels 20 dp, controls 10 dp, chips 8 dp, pills fully round.
+  static const double radiusCard = 16;
+  static const double radiusCardSmall = 12;
+  static const double radiusPanel = 20;
+  static const double radiusControl = 10;
   static const double radiusPill = 999;
-  static const double radiusChip = 10;
+  static const double radiusChip = 8;
 
   static const BorderRadius cardRadius = BorderRadius.all(
     Radius.circular(radiusCard),
@@ -126,7 +125,7 @@ class YumeDesign {
   static const double railGapLarge = 16;
 
   // ── Poster cards ────────────────────────────────────────────────────
-  /// Card widths for the new cinematic poster card. The rail keeps the same
+  /// Card widths for the cinematic poster card. The rail keeps the same
   /// footprint as 2.5.0 so list heights and scroll math do not change.
   static const double posterWidthPhone = 132;
   static const double posterWidthLarge = 200;
@@ -158,11 +157,4 @@ class YumeDesign {
   static const Duration staggerStep = Duration(milliseconds: 45);
   static const int staggerMaxItems = 8;
   static const Duration entranceDuration = Duration(milliseconds: 420);
-  static const Duration ambientDuration = Duration(seconds: 14);
-
-  // ── Ambient background ──────────────────────────────────────────────
-  /// Alpha of the drifting colour blobs. Low on purpose: the ambient layer
-  /// tints the canvas, it never competes with the poster on top of it.
-  static const double ambientAlpha = 0.30;
-  static const double ambientAlphaSecondary = 0.20;
 }

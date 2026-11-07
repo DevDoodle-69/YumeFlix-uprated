@@ -149,7 +149,7 @@ class _ContinueWatchingSectionState
                   // made the gap below this row read as bigger than the one
                   // above it. Clip.none is what pays for dropping it:
                   // CardsWrapper draws its focus ring OUTSIDE the card and
-                  // blurs a glow 8 dp further still, and a clipping viewport
+                  // blurs a shadow 8 dp further still, and a clipping viewport
                   // would cut both off with a hard edge on a television.
                   clipBehavior: Clip.none,
                   padding: EdgeInsets.symmetric(

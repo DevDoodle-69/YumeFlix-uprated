@@ -26,8 +26,6 @@ void main() {
         'large_image':
             'https://images.example.org/posters/black-clover.jpg?size=large',
         'large_text': 'Black Clover · S1 E1',
-        'small_image': DiscordPresenceService.discordLargeImageKey,
-        'small_text': 'YumeFlix',
       });
       expect(activity['timestamps'], {
         'start': 1699999966000,
@@ -37,24 +35,22 @@ void main() {
       });
     });
 
-    test('keeps the icon asset even when poster data is unavailable', () {
-      final activity = DiscordPresenceService.buildActivity(
-        title: 'Example Movie',
-        posterUrl: '/posters/title.jpg',
-        position: Duration.zero,
-        duration: Duration.zero,
-        playing: false,
-      );
-      expect(activity.containsKey('assets'), isTrue);
-      expect(activity['assets'], {
-        'large_image': DiscordPresenceService.discordLargeImageKey,
-        'large_text': 'YumeFlix',
-      });
-      expect(
-        (activity['assets'] as Map<String, dynamic>).containsKey('small_image'),
-        isFalse,
-      );
-    });
+    test(
+      'sends no image at all when poster data is unavailable (never a dead asset key)',
+      () {
+        final activity = DiscordPresenceService.buildActivity(
+          title: 'Example Movie',
+          posterUrl: '/posters/title.jpg',
+          position: Duration.zero,
+          duration: Duration.zero,
+          playing: false,
+        );
+        // 2.7.0: no verified poster means no `assets` object. The old
+        // `yumeflix_logo` fallback key was never uploaded under the app, so
+        // Discord rendered it as a black circle on every movie.
+        expect(activity.containsKey('assets'), isFalse);
+      },
+    );
 
     test('supports protocol-relative extension image URLs', () {
       expect(
@@ -80,13 +76,12 @@ void main() {
         (activity['assets'] as Map<String, dynamic>)['large_text'],
         'Black Clover · S1 E2',
       );
+      // No small image: the only small-image key ever used
+      // (`yumeflix_logo`) was never uploaded under the app, so sending it
+      // rendered a black circle badge on every activity.
       expect(
-        (activity['assets'] as Map<String, dynamic>)['small_image'],
-        DiscordPresenceService.discordLargeImageKey,
-      );
-      expect(
-        (activity['assets'] as Map<String, dynamic>)['small_text'],
-        'YumeFlix',
+        (activity['assets'] as Map<String, dynamic>).containsKey('small_image'),
+        isFalse,
       );
     });
 
@@ -103,12 +98,12 @@ void main() {
         'https://images.example.org/posters/insecure.jpg',
       );
       expect(
-        (activity['assets'] as Map<String, dynamic>)['small_image'],
-        DiscordPresenceService.discordLargeImageKey,
+        (activity['assets'] as Map<String, dynamic>).containsKey('small_image'),
+        isFalse,
       );
     });
 
-    test('falls back to the logo for non-URL posters', () {
+    test('sends no image for non-URL posters instead of a dead asset key', () {
       for (final posterUrl in ['not a url', null]) {
         final activity = DiscordPresenceService.buildActivity(
           title: 'Example Movie',
@@ -117,10 +112,7 @@ void main() {
           duration: const Duration(minutes: 90),
           playing: false,
         );
-        expect(activity['assets'], {
-          'large_image': DiscordPresenceService.discordLargeImageKey,
-          'large_text': 'YumeFlix',
-        });
+        expect(activity.containsKey('assets'), isFalse);
       }
     });
 
@@ -311,6 +303,36 @@ void main() {
           tmdbPosterUrl: null,
         ),
         isNull,
+      );
+    });
+
+    test('a keyless Cinemeta poster is the last resort, never the winner', () {
+      expect(
+        DiscordPresenceService.selectEffectivePoster(
+          extensionPosterUrl: 'https://cdn.example.org/poster.jpg',
+          tmdbPosterUrl: null,
+          cinemetaPosterUrl:
+              'https://images.metahub.space/poster/medium/tt1201607/img',
+        ),
+        'https://cdn.example.org/poster.jpg',
+      );
+      expect(
+        DiscordPresenceService.selectEffectivePoster(
+          extensionPosterUrl: null,
+          tmdbPosterUrl: null,
+          cinemetaPosterUrl:
+              'https://images.metahub.space/poster/medium/tt1201607/img',
+        ),
+        'https://images.metahub.space/poster/medium/tt1201607/img',
+      );
+      expect(
+        DiscordPresenceService.selectEffectivePoster(
+          extensionPosterUrl: null,
+          tmdbPosterUrl: 'https://image.tmdb.org/t/p/w500/tmdb.jpg',
+          cinemetaPosterUrl:
+              'https://images.metahub.space/poster/medium/tt1201607/img',
+        ),
+        'https://image.tmdb.org/t/p/w500/tmdb.jpg',
       );
     });
   });

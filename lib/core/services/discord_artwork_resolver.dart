@@ -3,12 +3,20 @@ import 'package:flutter/foundation.dart';
 
 import '../config/tmdb_config.dart';
 
-/// Resolves public TMDB poster URLs for Discord presence artwork.
+/// Resolves public poster URLs for Discord presence artwork.
 ///
-/// Results (including misses) are cached per title or TMDB id, media type,
-/// and configured API key. A single in-flight request is shared by multiple
-/// playback ticks. No key is ever hard-coded: without a configured key every
-/// lookup returns null and the caller keeps the extension poster.
+/// Two sources, in priority order:
+///
+/// 1. TMDB (key-gated) — the image.tmdb.org poster Discord's media proxy
+///    serves most reliably. Returns null without a configured key.
+/// 2. Stremio Cinemeta (keyless) — `v3-cinemeta.strem.io/meta/<type>/<imdb>.json`
+///    returns `poster`/`background` (images.metahub.space) with no key at
+///    all, so artwork keeps working in builds shipped without a TMDB key.
+///
+/// Nothing in this file ever sends an asset key: a poster is only usable
+/// after [verifyPosterUrl] proves it fetches as an image (HTTP 200/206,
+/// `content-type: image/*`). An unverified or missing poster means "send no
+/// image", never a fallback key — see [DiscordPresenceService.buildActivity].
 class DiscordArtworkResolver {
   DiscordArtworkResolver({Dio? dio})
     : _dio =
@@ -27,6 +35,19 @@ class DiscordArtworkResolver {
   final _cache = <String, String?>{};
   final _inFlight = <String, Future<String?>>{};
   static const int _maxCacheEntries = 128;
+
+  /// In-memory fetch-verification results, so a poster proven (or disproven)
+  /// once is not re-checked on every playback tick.
+  final _verifiedCache = <String, bool>{};
+  static const int _maxVerifiedEntries = 128;
+
+  /// Keyless Stremio Cinemeta metadata endpoint.
+  static const String cinemetaBaseUrl = 'https://v3-cinemeta.strem.io';
+
+  /// Only a well-formed IMDb id is ever sent to Cinemeta; anything else is
+  /// refused rather than guessed at.
+  static bool isValidImdbId(String? imdbId) =>
+      imdbId != null && RegExp(r'^tt\d{6,}$').hasMatch(imdbId.trim());
 
   /// Resolves a public TMDB poster URL for Discord presence artwork.
   ///
@@ -81,6 +102,165 @@ class DiscordArtworkResolver {
       cacheKey,
       () => _fetchById(tmdbId: tmdbId, mediaType: type, apiKey: apiKey),
     );
+  }
+
+  /// Keyless poster lookup via Stremio Cinemeta.
+  ///
+  /// `GET https://v3-cinemeta.strem.io/meta/<movie|series>/<imdbId>.json`
+  /// needs no key and returns the item's `poster` and `background`
+  /// (images.metahub.space URLs). This is the artwork source for builds
+  /// shipped without a TMDB key — which is every shipped build while
+  /// `secrets.TMDB_API_KEY` is unset, since [resolve]/[resolveById] then
+  /// return null for every title.
+  ///
+  /// Returns null for an invalid IMDb id, an unsupported media type, a
+  /// failed request, or a meta object with neither a poster nor a
+  /// background. Results (including misses) are cached per id and type.
+  Future<String?> resolveKeyless({
+    required String? imdbId,
+    required String mediaType,
+  }) async {
+    final type = mediaType.trim().toLowerCase();
+    final id = imdbId?.trim();
+    if (!isValidImdbId(id) || (type != 'movie' && type != 'tv')) {
+      return null;
+    }
+    final kind = type == 'tv' ? 'series' : 'movie';
+    final cacheKey = 'cinemeta|$type|$id';
+    return _cachedFetch(cacheKey, () => _fetchCinemeta(kind: kind, imdbId: id!));
+  }
+
+  Future<String?> _fetchCinemeta({
+    required String kind,
+    required String imdbId,
+  }) async {
+    try {
+      final response = await _dio.getUri<Map<String, dynamic>>(
+        Uri.parse('$cinemetaBaseUrl/meta/$kind/$imdbId.json'),
+        options: Options(headers: const {'Accept': 'application/json'}),
+      );
+      if (response.statusCode != 200 || response.data == null) return null;
+      return posterUrlFromCinemetaResponse(response.data!);
+    } catch (_) {
+      // Presence must survive Cinemeta being down: the caller sends no
+      // image rather than failing playback.
+      return null;
+    }
+  }
+
+  /// Poster first, background as a last resort, from a Cinemeta
+  /// `/meta/<type>/<imdb>.json` response. Cinemeta serves posters in
+  /// `small`/`medium`/`large` sizes; the `medium` variant is used so the
+  /// Discord cover is not a thumbnail upscale. A background URL is used
+  /// as-is (Cinemeta already serves it at `medium`).
+  /// Exposed for focused keyless-resolve tests.
+  @visibleForTesting
+  static String? posterUrlFromCinemetaResponse(Map<String, dynamic> response) {
+    final meta = response['meta'];
+    if (meta is! Map) return null;
+    final poster = (meta['poster'] as String?)?.trim();
+    if (poster != null && poster.isNotEmpty) {
+      final upgraded = _upgradeCinemetaPoster(poster);
+      if (upgraded != null) return upgraded;
+    }
+    final background = (meta['background'] as String?)?.trim();
+    if (background != null && background.isNotEmpty) {
+      return _asHttpsImageUrl(background);
+    }
+    return null;
+  }
+
+  /// Cinemeta poster URLs carry their size in the path
+  /// (`/poster/small/tt1201607/img`); `medium` is the Discord-cover size.
+  /// Any other poster host passes through unchanged.
+  static String? _upgradeCinemetaPoster(String url) {
+    final upgraded = url.replaceFirst('/poster/small/', '/poster/medium/');
+    return _asHttpsImageUrl(upgraded);
+  }
+
+  /// Accepts only absolute http(s) image URLs; upgrades http to https.
+  /// Anything else (relative paths, data/blob URLs, local hosts) is null.
+  static String? _asHttpsImageUrl(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty || value.length > 4096) return null;
+    final uri = Uri.tryParse(value);
+    if (uri == null ||
+        !uri.hasAuthority ||
+        uri.host.isEmpty ||
+        (uri.scheme != 'https' && uri.scheme != 'http')) {
+      return null;
+    }
+    return (uri.scheme == 'http' ? uri.replace(scheme: 'https') : uri)
+        .toString();
+  }
+
+  /// Proves a poster URL actually fetches as an image before Discord is
+  /// ever told about it.
+  ///
+  /// Sends a `HEAD` first (no body downloaded); servers that refuse `HEAD`
+  /// fall back to a 1 KiB ranged `GET`. True only for HTTP 200/206 with a
+  /// `content-type` starting with `image/`. Results are cached in memory
+  /// per URL so playback ticks never re-check the same poster.
+  ///
+  /// Discord's media proxy fetches the URL itself, so a phone-side 200 does
+  /// not guarantee Discord renders it — but an unverifiable URL is
+  /// guaranteed not to render, and sending it anyway is what used to
+  /// collapse the cover onto the dead fallback key.
+  Future<bool> verifyPosterUrl(String url) async {
+    final normalized = url.trim();
+    if (normalized.isEmpty) return false;
+    final cached = _verifiedCache[normalized];
+    if (cached != null) return cached;
+    final result = await _verifyPosterUrlUncached(normalized);
+    _verifiedCache[normalized] = result;
+    while (_verifiedCache.length > _maxVerifiedEntries) {
+      _verifiedCache.remove(_verifiedCache.keys.first);
+    }
+    return result;
+  }
+
+  Future<bool> _verifyPosterUrlUncached(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null || (uri.scheme != 'https' && uri.scheme != 'http')) {
+      return false;
+    }
+    try {
+      final head = await _dio.headUri<void>(
+        uri,
+        options: Options(validateStatus: (_) => true),
+      );
+      if (_isImageResponse(head.statusCode, head.headers)) return true;
+      // Some CDNs reject HEAD (405/501) while serving GET fine; a ranged
+      // GET proves fetchability without downloading the whole poster.
+      if (head.statusCode == 405 || head.statusCode == 501) {
+        return await _verifyWithRangedGet(uri);
+      }
+      return false;
+    } catch (_) {
+      return _verifyWithRangedGet(uri);
+    }
+  }
+
+  Future<bool> _verifyWithRangedGet(Uri uri) async {
+    try {
+      final response = await _dio.getUri<void>(
+        uri,
+        options: Options(
+          headers: const {'Range': 'bytes=0-1023'},
+          validateStatus: (_) => true,
+        ),
+      );
+      return _isImageResponse(response.statusCode, response.headers);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static bool _isImageResponse(int? statusCode, Headers headers) {
+    if (statusCode != 200 && statusCode != 206) return false;
+    final contentType =
+        headers.value(Headers.contentTypeHeader)?.trim().toLowerCase() ?? '';
+    return contentType.startsWith('image/');
   }
 
   Future<String?> _cachedFetch(

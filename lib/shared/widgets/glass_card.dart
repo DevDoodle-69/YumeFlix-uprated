@@ -4,15 +4,16 @@ import 'package:flutter/material.dart';
 
 import '../../core/theme/design_tokens.dart';
 
-/// The 2.6.0 glass primitives. One card language for the whole app:
+/// The 2.7.0 glass primitives. One card language for the whole app:
 ///
-/// * [GlassCard] — a translucent panel with a soft white border, a top-edge
-///   highlight and a gentle shadow. The blur is deliberately small
-///   ([sigma] defaults to 14) and the widget is wrapped in a
+/// * [GlassCard] — a neutral translucent panel with a hairline border
+///   and a gentle black shadow. The blur is deliberately small
+///   ([sigma] defaults to 10) and the widget is wrapped in a
 ///   [RepaintBoundary] by callers that sit over animated content; glass is
-///   used for panels and chips, never as a full-screen backdrop.
-/// * [GlassChip] — the single chip language: icon + label in a pill, with
-///   an optional accent tint.
+///   used for panels and chips, never as a full-screen backdrop, and never
+///   with a coloured tint or halo.
+/// * [GlassChip] — the single chip language: icon + label in a pill, in
+///   monochrome neutral glass. No amber, no coloured badges.
 /// * [GlassIconButton] — the single round icon-button language for headers.
 ///
 /// All three are pure decoration over the caller's child — they own no
@@ -33,8 +34,10 @@ class GlassCard extends StatelessWidget {
     this.padding,
     this.borderRadius,
     this.fill,
-    this.sigma = 14,
-    this.showTopHighlight = true,
+    this.sigma = 10,
+    // Kept for call-site compatibility; the top highlight gradient is
+    // gone in 2.7.0 — glass is flat neutral, no highlight wash.
+    this.showTopHighlight = false,
     this.onTap,
   });
 
@@ -54,21 +57,7 @@ class GlassCard extends StatelessWidget {
               color: YumeDesign.glassBorder,
               width: 1,
             ),
-            // The top-edge highlight: a white gradient that fades out
-            // two-thirds down, so the panel reads as lit glass rather
-            // than a flat translucent box.
-            gradient: showTopHighlight
-                ? LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.white.withValues(alpha: 0.10),
-                      Colors.white.withValues(alpha: 0.02),
-                      Colors.transparent,
-                    ],
-                    stops: const [0.0, 0.35, 1.0],
-                  )
-                : null,
+            // 2.7.0: flat neutral glass — no top-highlight gradient.
             boxShadow: YumeDesign.glassShadow(),
           ),
           child: child,
@@ -88,10 +77,12 @@ class GlassCard extends StatelessWidget {
   }
 }
 
-/// One chip language for the whole app: a translucent pill with an optional
-/// leading icon and an optional accent tint. Used for ratings, years,
-/// durations, types, providers and filter states — everywhere a small
-/// labelled badge used to be a one-off [Container].
+/// One chip language for the whole app: a monochrome neutral-glass pill
+/// with an optional leading icon. Used for ratings, years, durations,
+/// types, providers and filter states — everywhere a small labelled badge
+/// used to be a one-off [Container]. The optional [accent] is the single
+/// muted slate-blue accent, used sparingly; the default is plain white
+/// on neutral glass.
 class GlassChip extends StatelessWidget {
   final String label;
   final IconData? icon;
@@ -110,13 +101,13 @@ class GlassChip extends StatelessWidget {
     this.padding,
   });
 
-  /// Accent-tinted chip: violet by default, the gradient ramp's first stop.
-  /// Use for the "primary" chip in a row (type, provider) so one chip leads.
+  /// Accent chip: the single muted slate-blue accent, filled. Use for
+  /// the "primary" chip in a row (type, provider) so one chip leads.
   factory GlassChip.accent(
     String label, {
     Key? key,
     IconData? icon,
-    Color accent = YumeDesign.violet,
+    Color accent = YumeDesign.accent,
   }) {
     return GlassChip(
       key: key,
@@ -127,15 +118,10 @@ class GlassChip extends StatelessWidget {
     );
   }
 
-  /// A rating chip: gold star + value, e.g. "8.4".
+  /// A rating chip: white star + value, e.g. "8.4", in neutral glass.
+  /// No amber, no coloured badge.
   factory GlassChip.rating(String value, {Key? key}) {
-    return GlassChip(
-      key: key,
-      label: value,
-      icon: Icons.star_rounded,
-      accent: YumeDesign.amber,
-      filled: true,
-    );
+    return GlassChip(key: key, label: value, icon: Icons.star_rounded);
   }
 
   @override

@@ -51,10 +51,10 @@ class SettingsGroup extends StatelessWidget {
               const SizedBox(height: 5),
               Container(
                 width: 28,
-                height: 3,
+                height: 2,
                 decoration: BoxDecoration(
-                  gradient: YumeDesign.accentGradient,
-                  borderRadius: BorderRadius.circular(2),
+                  color: Colors.white.withValues(alpha: 0.35),
+                  borderRadius: BorderRadius.circular(1),
                 ),
               ),
             ],

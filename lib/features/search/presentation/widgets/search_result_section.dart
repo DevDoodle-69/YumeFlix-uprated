@@ -9,7 +9,6 @@ import 'package:yumeflix/core/router/app_router.dart';
 import 'package:yumeflix/core/utils/image_fallbacks.dart';
 import 'package:yumeflix/shared/widgets/desktop_scroll_wrapper.dart';
 import 'package:yumeflix/shared/widgets/glass_card.dart';
-import 'package:yumeflix/core/theme/design_tokens.dart';
 import 'package:yumeflix/shared/widgets/multimedia_card.dart';
 
 import 'stamp_in_label.dart';
@@ -86,10 +85,10 @@ class _SearchResultSectionState extends ConsumerState<SearchResultSection> {
                     const SizedBox(height: 5),
                     Container(
                       width: 28,
-                      height: 3,
+                      height: 2,
                       decoration: BoxDecoration(
-                        gradient: YumeDesign.accentGradient,
-                        borderRadius: BorderRadius.circular(2),
+                        color: Colors.white.withValues(alpha: 0.35),
+                        borderRadius: BorderRadius.circular(1),
                       ),
                     ),
                   ],

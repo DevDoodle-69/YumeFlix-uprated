@@ -2,13 +2,12 @@ import 'package:flutter/material.dart';
 
 import '../../core/theme/design_tokens.dart';
 
-/// The 2.6.0 section header — one header language for every rail on every
+/// The 2.7.0 section header — one header language for every rail on every
 /// screen.
 ///
-/// Title in bold, a short gradient underline in the accent ramp, and an
-/// optional trailing action (a "View all" pill, a clear button, arrows).
-/// The old per-widget headers each drew their own 20–30 dp blue bar under
-/// the title; the gradient underline replaces all of them.
+/// Title in bold, a short solid hairline underline in neutral white, and
+/// an optional trailing action (a "View all" pill, a clear button,
+/// arrows). No gradient, no accent bar.
 ///
 /// [StaggeredEntrance] is the cheap entrance used by rails: a one-shot
 /// fade + 12 dp rise, staggered by [YumeDesign.staggerStep] per index and
@@ -63,10 +62,10 @@ class SectionHeader extends StatelessWidget {
         const SizedBox(height: 5),
         Container(
           width: 28,
-          height: 3,
+          height: 2,
           decoration: BoxDecoration(
-            gradient: YumeDesign.accentGradient,
-            borderRadius: BorderRadius.circular(2),
+            color: Colors.white.withValues(alpha: 0.35),
+            borderRadius: BorderRadius.circular(1),
           ),
         ),
         if (subtitle != null) ...[

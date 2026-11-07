@@ -425,7 +425,7 @@ class _AddonDetailScreenState extends ConsumerState<AddonDetailScreen> {
                                 context,
                                 Icons.star_rounded,
                                 rating,
-                                iconColor: Colors.amber,
+                                iconColor: Colors.white,
                               ),
                             if (runtime.isNotEmpty)
                               _buildIconInfo(
@@ -760,7 +760,7 @@ class _AddonDetailScreenState extends ConsumerState<AddonDetailScreen> {
                         context,
                         Icons.star_rounded,
                         rating,
-                        iconColor: Colors.amber,
+                        iconColor: Colors.white,
                       ),
                     if (runtime.isNotEmpty)
                       _buildIconInfo(context, Icons.timer_outlined, runtime),

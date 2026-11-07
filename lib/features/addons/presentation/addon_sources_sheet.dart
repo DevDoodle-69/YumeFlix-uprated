@@ -477,7 +477,7 @@ class _AddonSourcesSheetState extends ConsumerState<AddonSourcesSheet> {
         (remainingReady.isEmpty ? 0 : 1 + remainingReady.length);
 
     // Dynamic Capsule: Centered floating glass island.
-    // Clean Hyprland-inspired blur: sigmaX: 18, alpha: 0.80, 1px white/12 border, zero colored glow.
+    // Clean Hyprland-inspired blur: sigmaX: 18, alpha: 0.80, 1px white/12 border, zero colored shadow.
     return GlassSheetScaffold(
       title: 'Stremio Sources',
       subtitle: subtitleText,

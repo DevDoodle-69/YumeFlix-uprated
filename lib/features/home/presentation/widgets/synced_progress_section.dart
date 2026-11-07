@@ -63,7 +63,7 @@ class _SyncedProgressSectionState extends ConsumerState<SyncedProgressSection> {
             child: ListView.builder(
               controller: _scrollController,
               // Same as ContinueWatchingSection above it: no vertical padding,
-              // and Clip.none so the card's focus ring and glow survive.
+              // and Clip.none so the card's focus ring and shadow survive.
               clipBehavior: Clip.none,
               padding: EdgeInsets.symmetric(
                 horizontal: isLarge

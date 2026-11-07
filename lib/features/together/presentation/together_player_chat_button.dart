@@ -4,9 +4,10 @@ import 'package:flutter/material.dart';
 
 /// The glass Together chat button for the player controls row.
 ///
-/// One round glass button (translucent + backdrop blur, so the film stays
-/// visible behind it) with the chat icon and, when a message arrived while
-/// the panel was closed, a glowing pulsing unread dot.
+/// One round neutral glass button (translucent + backdrop blur, so the
+/// film stays visible behind it) with the chat icon and, when a message
+/// arrived while the panel was closed, a flat unread dot — no shadow,
+/// no pulse.
 ///
 /// This is the reusable component for the controls row. The player screen
 /// already wires a chat button into [VlcPlayerControls] via `onTogetherChat`
@@ -38,19 +39,8 @@ class TogetherPlayerChatButton extends StatefulWidget {
       _TogetherPlayerChatButtonState();
 }
 
-class _TogetherPlayerChatButtonState extends State<TogetherPlayerChatButton>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _pulse = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1200),
-  )..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _pulse.dispose();
-    super.dispose();
-  }
-
+class _TogetherPlayerChatButtonState
+    extends State<TogetherPlayerChatButton> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -84,27 +74,14 @@ class _TogetherPlayerChatButtonState extends State<TogetherPlayerChatButton>
           Positioned(
             top: 2,
             right: 2,
-            child: AnimatedBuilder(
-              animation: _pulse,
-              builder: (context, _) {
-                return Container(
-                  width: 11,
-                  height: 11,
-                  decoration: BoxDecoration(
-                    color: colorScheme.primary,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.black, width: 1.5),
-                    boxShadow: [
-                      BoxShadow(
-                        color: colorScheme.primary.withValues(
-                          alpha: 0.5 + 0.4 * _pulse.value,
-                        ),
-                        blurRadius: 4 + 4 * _pulse.value,
-                      ),
-                    ],
-                  ),
-                );
-              },
+            child: Container(
+              width: 11,
+              height: 11,
+              decoration: BoxDecoration(
+                color: colorScheme.primary,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.black, width: 1.5),
+              ),
             ),
           ),
       ],

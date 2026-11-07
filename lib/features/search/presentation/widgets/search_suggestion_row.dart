@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../../l10n/generated/app_localizations.dart';
+import '../../../../core/theme/design_tokens.dart';
 import '../../../../shared/focus/app_focus.dart';
 
 /// Whether the caret is currently in a text field.
@@ -184,7 +185,7 @@ class _SearchSuggestionRowState extends State<SearchSuggestionRow> {
         _isButtonHovered || showFocusIndicator(context, _buttonNode.hasFocus);
 
     final highlightColor = isDark
-        ? const Color(0xFF1F80E0)
+        ? YumeDesign.accent
         : theme.colorScheme.primary;
     final rowHighlightBg = highlightColor.withValues(
       alpha: isDark ? 0.22 : 0.10,

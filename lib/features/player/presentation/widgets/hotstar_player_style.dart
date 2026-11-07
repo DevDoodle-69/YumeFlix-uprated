@@ -8,9 +8,11 @@ class HotstarPlayerStyle {
   static const Color background = Color(0xFF000000);
   static const Color panel = Color(0xFF05070B);
   static const Color panelElevated = Color(0xFF090D14);
-  static const Color accent = Color(0xFF0A84FF);
-  static const Color hotstar = Color(0xFF1F80E0);
-  static const Color accentAlt = Color(0xFFDD3EFF);
+  // 2.7.0: one muted slate-blue accent, shared with the rest of the app
+  // (see YumeDesign.accent). No bright blue, no magenta.
+  static const Color accent = Color(0xFF6B84A0);
+  static const Color hotstar = Color(0xFF6B84A0);
+  static const Color accentAlt = Color(0xFF6B84A0);
   static const Color primaryText = Color(0xF2FFFFFF);
   static const Color secondaryText = Color(0xA6FFFFFF);
 
@@ -25,7 +27,7 @@ class HotstarPlayerStyle {
   /// torrent progress bar. It tells a viewer how much is left, so it is a UI
   /// component under WCAG 1.4.11 and owes 3:1; 0x5C measures 3.14:1.
   static const Color trackInactive = Color(0x5CFFFFFF);
-  static const Color focus = Color(0x660A84FF);
+  static const Color focus = Color(0x666B84A0);
   static const Color liveRed = Color(0xFFE53935);
 
   /// The focus ring, everywhere in the player chrome.
@@ -44,9 +46,9 @@ class HotstarPlayerStyle {
   /// is, and low enough not to lift a control off a bright scene.
   static const Color focusFill = Color(0x26FFFFFF);
 
-  /// Marker on the scrubber for skip segments (intro / recap / outro). A warm
-  /// amber so it reads clearly against the blue progress and grey track.
-  static const Color skipSegment = Color(0xFFFFC107);
+  /// Marker on the scrubber for skip segments (intro / recap / outro).
+  /// Neutral white so it reads against the muted progress and grey track.
+  static const Color skipSegment = Color(0xFFFFFFFF);
 
   // --- Motion ---
   static const Duration controlFadeDuration = Duration(milliseconds: 220);

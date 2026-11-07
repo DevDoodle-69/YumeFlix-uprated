@@ -1286,14 +1286,14 @@ class _FocusableRowState extends State<_FocusableRow> {
         // much clearance inside the card's antiAlias clip or the ring is
         // sliced off down both long edges.
         margin: const EdgeInsets.all(CardFocusAffordance.ringWidth),
-        decoration: CardFocusAffordance.glow(
+        decoration: CardFocusAffordance.shadow(
           borderRadius: _radius,
           focused: showFocusIndicator(context, _isFocused),
         ),
         child: DecoratedBox(
           decoration: BoxDecoration(
             // The colour the card already fills itself with, so this is
-            // invisible until the glow needs something to hide behind.
+            // invisible until the shadow needs something to hide behind.
             color: colorScheme.surface,
             borderRadius: _radius,
           ),
@@ -1385,7 +1385,7 @@ class _FocusableCardState extends State<_FocusableCard> {
             boxShadow: highlight
                 ? [
                     BoxShadow(
-                      color: theme.colorScheme.primary.withValues(alpha: 0.25),
+                      color: Colors.black.withValues(alpha: 0.35),
                       blurRadius: 8,
                       spreadRadius: 1,
                     ),

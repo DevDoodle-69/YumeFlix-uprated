@@ -330,7 +330,7 @@ class _RatingTab extends ConsumerWidget {
                 : (rating == null
                       ? Theme.of(context).colorScheme.onSurface
                             .withValues(alpha: 0.3)
-                      : Colors.amber),
+                      : Colors.white),
           ),
           title: Text(
             label,

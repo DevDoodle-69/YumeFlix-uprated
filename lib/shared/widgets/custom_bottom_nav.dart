@@ -185,7 +185,7 @@ class _NavTabCellState extends State<_NavTabCell> {
           child: AnimatedContainer(
             duration: AppFocus.duration,
             // A neutral ring, and none of it on a phone being tapped - which
-            // is the only place this bar exists, so the accent glow that used
+            // is the only place this bar exists, so the accent shadow that used
             // to be here was a television cue on a device with no remote.
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(26),

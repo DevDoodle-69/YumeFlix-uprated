@@ -203,14 +203,17 @@ class _HoverBorderGradientState extends State<HoverBorderGradient>
               final angle =
                   _controller.value * 2 * math.pi * (widget.clockwise ? 1 : -1);
 
+              // 2.7.0: monochrome only — the sweeping border is white at
+              // varying alpha in both states, never blue. Active state is
+              // simply brighter.
               final borderColors = isActive
                   ? [
-                      const Color(0xFF3275F8),
-                      const Color(0xFF3275F8).withValues(alpha: 0.5),
+                      Colors.white.withValues(alpha: 0.9),
+                      Colors.white.withValues(alpha: 0.5),
                       Colors.white.withValues(alpha: 0.8),
-                      const Color(0xFF3275F8).withValues(alpha: 0.2),
+                      Colors.white.withValues(alpha: 0.25),
                       Colors.transparent,
-                      const Color(0xFF3275F8),
+                      Colors.white.withValues(alpha: 0.9),
                     ]
                   : [
                       Colors.white.withValues(alpha: 0.8),

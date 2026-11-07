@@ -375,7 +375,7 @@ class _CustomButtonState extends State<CustomButton> {
     final colorScheme = Theme.of(context).colorScheme;
     // One ring, and only for whoever is driving the app without a pointer.
     // What used to be here was an accent border, an accent fill *and* a 24 dp
-    // accent glow with 2 dp of spread - three cues for one state, and the one
+    // accent shadow with 2 dp of spread - three cues for one state, and the one
     // the details page wore the moment it opened, on every platform.
     final show = showFocusIndicator(context, _isFocused);
     final side = AppFocus.side(context, focused: show);

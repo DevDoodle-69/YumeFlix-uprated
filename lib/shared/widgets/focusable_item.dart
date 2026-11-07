@@ -139,7 +139,7 @@ class _FocusableItemState extends State<FocusableItem>
               final borderRadius =
                   widget.borderRadius ?? BorderRadius.circular(12);
               return Container(
-                decoration: CardFocusAffordance.glow(
+                decoration: CardFocusAffordance.shadow(
                   borderRadius: borderRadius,
                   focused: _isFocused,
                 ),

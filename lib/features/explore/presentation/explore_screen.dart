@@ -21,8 +21,6 @@ import '../../../../core/utils/layout_constants.dart';
 import '../../../../core/utils/responsive_breakpoints.dart';
 import '../../../../core/providers/device_info_provider.dart';
 import '../../../../shared/widgets/shimmer_placeholder.dart';
-import '../../../../shared/widgets/ambient_background.dart';
-import '../../../core/theme/artwork_palette.dart';
 import '../../../../core/domain/entity/multimedia_item.dart';
 import '../../addons/presentation/addons_screen.dart';
 import 'widgets/explore_mode_selector_dialog.dart';
@@ -342,10 +340,7 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen>
               ),
             ],
           ),
-          body: AmbientBackground(
-            accent: ref.watch(artworkAccentProvider),
-            child: _withGradientEdgeHint(_buildActiveExploreBody(context)),
-          ),
+          body: _withGradientEdgeHint(_buildActiveExploreBody(context)),
         );
       },
     );
@@ -387,10 +382,7 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen>
           ),
         ),
         Expanded(
-          child: AmbientBackground(
-            accent: ref.watch(artworkAccentProvider),
-            child: _withGradientEdgeHint(_buildActiveExploreBody(context)),
-          ),
+          child: _withGradientEdgeHint(_buildActiveExploreBody(context)),
         ),
       ],
     );

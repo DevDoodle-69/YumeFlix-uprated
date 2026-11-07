@@ -9,6 +9,7 @@ import 'package:mqtt_client/mqtt_server_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:typed_data/typed_data.dart';
 
+import 'connection.dart';
 import 'models.dart';
 import 'sync_math.dart';
 
@@ -16,18 +17,14 @@ import 'sync_math.dart';
 /// can never find each other with only a 6-digit code and no rendezvous, so
 /// the app ships the broker address baked in and the user never types a URL.
 ///
-/// Primary first, public fallback second, both no-auth secure WebSocket.
-/// If neither answers, Together says so plainly instead of failing quietly.
-class _Broker {
-  const _Broker(this.host, this.port);
-  final String host;
-  final int port;
-}
-
-const List<_Broker> _kBrokers = <_Broker>[
-  _Broker('broker.emqx.io', 8084),
-  _Broker('test.mosquitto.org', 8081),
-];
+/// Relays live in [kTogetherRelays] (see `connection.dart`): EMQX first,
+/// Mosquitto second, both no-auth secure WebSocket. The client
+/// construction there is the one `mqtt_client` requires for wss — a
+/// `wss://…/mqtt` URL with `useWebSocket = true` and the `secure` flag
+/// left alone (it is TCP-only; setting it together with `useWebSocket`
+/// silently turned the websocket back off and made 2.6.0 fail on every
+/// network). If neither relay answers, Together says which relays it
+/// tried and what actually failed, instead of blaming the user's internet.
 
 /// Room topic for [otp]: `yumeflix/together/v1/<6-digit code>`.
 String togetherTopicFor(String otp) => 'yumeflix/together/v1/$otp';
@@ -71,15 +68,17 @@ const Duration kTogetherHostSilenceTimeout = Duration(seconds: 8);
 /// gone — not that the host is browsing slowly.
 const Duration kTogetherWaitingStaleTimeout = Duration(seconds: 30);
 
-/// Reconnect backoff after a mid-room relay drop: 1 s, 2 s, 4 s, 8 s, 15 s.
-/// After the fifth failed attempt the room reports the relay unreachable.
-const List<int> kTogetherReconnectDelaysSeconds = <int>[1, 2, 4, 8, 15];
-const int kTogetherMaxReconnectAttempts = 5;
+/// Reconnect backoff and the attempt cap live in `connection.dart`
+/// ([kTogetherReconnectDelaysSeconds], [kTogetherMaxReconnectAttempts])
+/// so they are unit-tested alongside the failure classification.
 
-/// The user-facing message when the relay cannot be reached. Shown verbatim
-/// by the UI — never a silent failure, never a stack trace.
+/// Fallback user-facing message when the relay cannot be reached and no
+/// classified failure is available. Shown verbatim by the UI — never a
+/// silent failure, never a stack trace, and never a claim about the
+/// user's internet: the classified message on [TogetherConnectFailure]
+/// is what the service normally sets instead.
 const String kTogetherRelayUnreachableMessage =
-    "Couldn't reach the Together relay — check internet and retry.";
+    "Couldn't reach the Together relay — it didn't answer. Try again in a moment.";
 
 /// Owns one Together room: the MQTT relay connection, host/guest state,
 /// chat, heartbeats and last-room persistence.
@@ -143,6 +142,23 @@ class TogetherService extends ChangeNotifier {
   bool _reconnecting = false;
   int _reconnectAttempt = 0;
 
+  /// Relay that answered the current connection, e.g. `EMQX` — null while
+  /// not connected. Shown in the room's connection status indicator.
+  String? _connectedRelayLabel;
+
+  /// Last measured MQTT round-trip, in milliseconds, or null before the
+  /// first heartbeat echo comes back. Measured, never guessed: our own
+  /// heartbeat publish is echoed back by the broker (we subscribe to our
+  /// own topic), and the echo's timestamp is the send time.
+  int? _roundTripMs;
+
+  /// Why the last connection attempt failed, when it failed. The UI shows
+  /// its honest message instead of a generic "check internet" line.
+  TogetherConnectFailure? _lastFailure;
+
+  /// Relay labels tried by the last connection attempt, in order.
+  List<String> _attemptedRelayLabels = const <String>[];
+
   /// Set while the connection is being (re)established, so a disconnect
   /// callback from a client that never connected cannot start a reconnect
   /// loop of its own.
@@ -199,6 +215,36 @@ class TogetherService extends ChangeNotifier {
   int? _pendingAdoptedSeekMs;
   bool _adoptingRejoin = false;
 
+  /// Player-owned actions for the single root-mounted floating orb.
+  ///
+  /// The orb lives above the router (see `main.dart`) so it survives every
+  /// route push, but only the player knows the engine's live position and
+  /// only the player screen owns the chat panel. The player hook registers
+  /// its `goLive` here while a player is open and clears it on dispose;
+  /// the player screen does the same for opening the chat panel. The orb
+  /// reads these and falls back to navigation ("open the title") when no
+  /// player is open. These are UI wiring only — no MQTT, no room state.
+  VoidCallback? _orbStartAction;
+  VoidCallback? _orbOpenChatAction;
+
+  /// The player hook's live Start action, or null while no player is open.
+  VoidCallback? get orbStartAction => _orbStartAction;
+
+  /// The player screen's open-chat action, or null while no player is open.
+  VoidCallback? get orbOpenChatAction => _orbOpenChatAction;
+
+  void registerOrbStartAction(VoidCallback? action) {
+    if (_orbStartAction == action) return;
+    _orbStartAction = action;
+    notifyListeners();
+  }
+
+  void registerOrbOpenChatAction(VoidCallback? action) {
+    if (_orbOpenChatAction == action) return;
+    _orbOpenChatAction = action;
+    notifyListeners();
+  }
+
   /// What [retry] should redo: 'create' or 'join'.
   String? _lastAction;
 
@@ -221,6 +267,38 @@ class TogetherService extends ChangeNotifier {
 
   /// True while a relay drop is being retried in the background.
   bool get reconnecting => _reconnecting;
+
+  /// 0-based reconnect attempt in progress (0 while idle / connected).
+  int get reconnectAttempt => _reconnectAttempt;
+
+  /// Relay that answered the current connection (`EMQX`, `Mosquitto`),
+  /// or null while not connected.
+  String? get connectedRelayLabel => _connectedRelayLabel;
+
+  /// Last measured MQTT round-trip in milliseconds, or null before the
+  /// first heartbeat echo. A real measurement, never a guess.
+  int? get roundTripMs => _roundTripMs;
+
+  /// Why the last connection attempt failed, when it failed.
+  TogetherConnectFailure? get lastFailure => _lastFailure;
+
+  /// Relay labels tried by the last connection attempt, in order.
+  List<String> get attemptedRelayLabels =>
+      List.unmodifiable(_attemptedRelayLabels);
+
+  /// One-line connection status for the room UI: relay name, reconnecting
+  /// state, and latency when it has really been measured.
+  String get connectionStatusLabel => togetherConnectionStatusLabel(
+    connected: isConnected,
+    reconnecting: _reconnecting,
+    connecting: _connecting,
+    relayLabel: _connectedRelayLabel,
+    roundTripMs: _roundTripMs,
+    reconnectAttempt: _reconnectAttempt,
+    lastTriedRelaysLabel: _attemptedRelayLabels.isEmpty
+        ? null
+        : _attemptedRelayLabels.join(', '),
+  );
 
   /// True once a waiting guest has heard nothing from the host for
   /// [kTogetherWaitingStaleTimeout] after joining.
@@ -275,6 +353,33 @@ class TogetherService extends ChangeNotifier {
     _pendingAdoptedSeekMs = null;
     return target;
   }
+
+  // ---- Test seams ----
+
+  /// Enters a room without touching the relay: host lands in
+  /// [TogetherPhase.pendingHost], guest in [TogetherPhase.waitingGuest].
+  /// Test-only — production entry is [createRoom]/[joinRoom].
+  @visibleForTesting
+  void debugEnterRoomForTest({
+    required TogetherRole role,
+    required String otp,
+  }) {
+    _resetRoomState();
+    _role = role;
+    _otp = otp;
+    _phase = role == TogetherRole.host
+        ? TogetherPhase.pendingHost
+        : TogetherPhase.waitingGuest;
+    if (role == TogetherRole.guest) {
+      _waitingSinceMs = DateTime.now().millisecondsSinceEpoch;
+    }
+    notifyListeners();
+  }
+
+  /// Feeds one relay payload through the normal inbound path
+  /// ([_handlePayload]), as if it had arrived from the broker. Test-only.
+  @visibleForTesting
+  void debugReceivePayloadForTest(String json) => _handlePayload(json);
 
   // ---- Lifecycle ----
 
@@ -385,10 +490,10 @@ class TogetherService extends ChangeNotifier {
     _otp = generateOtp(_random);
     _phase = TogetherPhase.pendingHost;
     notifyListeners();
-    final ok = await _connectAndSubscribe();
-    if (!ok) {
+    final failure = await _connectAndSubscribe();
+    if (failure != null) {
       _phase = TogetherPhase.error;
-      _error = kTogetherRelayUnreachableMessage;
+      _error = failure.message;
       notifyListeners();
       return false;
     }
@@ -417,10 +522,10 @@ class TogetherService extends ChangeNotifier {
     _otp = code;
     _phase = TogetherPhase.waitingGuest;
     notifyListeners();
-    final ok = await _connectAndSubscribe();
-    if (!ok) {
+    final failure = await _connectAndSubscribe();
+    if (failure != null) {
       _phase = TogetherPhase.error;
-      _error = kTogetherRelayUnreachableMessage;
+      _error = failure.message;
       notifyListeners();
       return false;
     }
@@ -468,10 +573,10 @@ class TogetherService extends ChangeNotifier {
     _otp = otp;
     _phase = TogetherPhase.pendingHost;
     notifyListeners();
-    final ok = await _connectAndSubscribe();
-    if (!ok) {
+    final failure = await _connectAndSubscribe();
+    if (failure != null) {
       _phase = TogetherPhase.error;
-      _error = kTogetherRelayUnreachableMessage;
+      _error = failure.message;
       notifyListeners();
       return false;
     }
@@ -549,6 +654,10 @@ class TogetherService extends ChangeNotifier {
     _presentMembers.clear();
     _reconnecting = false;
     _reconnectAttempt = 0;
+    _connectedRelayLabel = null;
+    _roundTripMs = null;
+    _lastFailure = null;
+    _attemptedRelayLabels = const <String>[];
     _waitingStale = false;
     _waitingSinceMs = null;
     _lastPublishedStatus = null;
@@ -572,7 +681,18 @@ class TogetherService extends ChangeNotifier {
   void attachMedia(TogetherMediaIdentity media) {
     if (!isSessionActive) return;
     final changed = _pendingMedia != media;
-    _pendingMedia = media;
+    if (changed) {
+      // A new title starts at its own position 0 — never the previous
+      // title's. Without this, a host that re-shares a different movie
+      // while live publishes the new title at the old title's position
+      // and the guest seeks into the wrong place before the first engine
+      // tick corrects it. The playing flag is NOT reset: the transport
+      // state carries across a title switch and the status line derives
+      // from it.
+      _pendingMedia = media;
+      _lastLocalPositionMs = 0;
+      _lastLocalDurationMs = 0;
+    }
     if (_role == TogetherRole.host && _phase == TogetherPhase.live) {
       _publishState(force: true);
     } else if (changed) {
@@ -587,15 +707,26 @@ class TogetherService extends ChangeNotifier {
 
   /// Host: goes live at [positionMs] and publishes the first retained state.
   /// A rejoining host passes the adopted position (see [rejoinLastRoom]).
-  void goLive({required int positionMs, required int durationMs}) {
+  /// [playing] is the engine's actual transport state at the tap (the
+  /// player hook passes it); when omitted the last reported tick is used.
+  /// Never assume playing: a paused host that publishes `playing: true`
+  /// makes the guest play a title the host is not playing.
+  void goLive({
+    required int positionMs,
+    required int durationMs,
+    bool? playing,
+  }) {
     if (_role != TogetherRole.host || _pendingMedia == null) return;
     _phase = TogetherPhase.live;
     _hostGone = false;
+    _lastLocalPositionMs = positionMs;
+    _lastLocalDurationMs = durationMs;
+    if (playing != null) _lastLocalPlaying = playing;
     _publishState(
       force: true,
       positionMs: positionMs,
       durationMs: durationMs,
-      playing: true,
+      playing: _lastLocalPlaying,
     );
     _maybePublishStatus();
     unawaited(_persistLastRoom());
@@ -850,47 +981,112 @@ class TogetherService extends ChangeNotifier {
 
   // ---- Relay connection ----
 
-  Future<bool> _connectAndSubscribe() async {
+  /// Tries the relays in [kTogetherRelays] order and subscribes to the
+  /// room topic on the first one that answers. Returns null on success,
+  /// or the classified failure (which relays were tried, what actually
+  /// failed) when every relay fails.
+  ///
+  /// The client construction is the one `mqtt_client` requires for secure
+  /// websockets (see its `mqtt_server_client_websocket_secure.dart`
+  /// example): a `wss://<host>/mqtt` URL, `useWebSocket = true`, the
+  /// `secure` flag left false — it is TCP-only, and setting it together
+  /// with `useWebSocket` silently turns the websocket back off, which is
+  /// exactly how 2.6.0 failed on every network. One attempt per relay
+  /// (`maxConnectionAttempts: 1`): the service does its own failover, so
+  /// a dead relay must not burn three internal retries first. Each
+  /// attempt is bounded by [kTogetherConnectTimeoutMs] (TCP + TLS +
+  /// websocket upgrade) plus [kTogetherConnAckWaitMs] for the CONNACK, so
+  /// the whole failover finishes in seconds, not minutes.
+  ///
+  /// No connectivity pre-check: the real connection attempt *is* the
+  /// check. A pre-check (DNS probe, `connectivity_plus`) can fail while
+  /// MQTT would have worked, and can pass while the relay is down — so
+  /// nothing here judges the network before trying the relay, and the
+  /// failure is classified from the actual exception afterwards.
+  Future<TogetherConnectFailure?> _connectAndSubscribe() async {
     final otp = _otp;
-    if (otp == null) return false;
+    if (otp == null) {
+      return const TogetherConnectFailure(
+        kind: TogetherConnectFailureKind.relayUnreachable,
+        triedRelays: <String>[],
+      );
+    }
     _connecting = true;
+    final attempted = <String>[];
+    TogetherConnectFailureKind? worstKind;
+    String? worstDetail;
     try {
-      for (final broker in _kBrokers) {
-        final client =
-            MqttServerClient.withPort(broker.host, clientId, broker.port);
+      for (final relay in kTogetherRelays) {
+        attempted.add(relay.label);
+        _attemptedRelayLabels = List.unmodifiable(attempted);
+        final client = MqttServerClient(
+          relay.url,
+          clientId,
+          maxConnectionAttempts: 1,
+        );
         client.useWebSocket = true;
-        // Secure WebSocket (wss) on the broker's TLS websocket port.
-        client.secure = true;
-        client.websocketProtocols = const <String>['mqtt'];
+        client.port = relay.port;
+        // NEVER client.secure here: secure is for raw TCP MQTT only.
+        // The wss:// scheme in [relay.url] is what makes this a secure
+        // websocket; setting secure as well disables the websocket.
+        client.websocketProtocols =
+            MqttClientConstants.protocolsSingleDefault;
         client.keepAlivePeriod = 20;
         client.logging(on: false);
         client.onConnected = _onConnected;
         client.onDisconnected = _onDisconnected;
+        client.connectionTimeout = kTogetherConnectTimeoutMs;
+        client.connectTimeoutPeriod = kTogetherConnAckWaitMs;
         client.connectionMessage = MqttConnectMessage()
             .withClientIdentifier(clientId)
             .startClean();
         try {
           await client.connect();
-        } catch (_) {
+        } catch (e) {
+          // Classify, remember, move on to the next relay: one dead
+          // relay must not hide the error, and must not end the attempt.
+          final kind = mapConnectError(e);
+          // A timeout outranks a refused connection as the "worst"
+          // failure to report when every relay fails: it is the most
+          // informative about a blocked/slow network path.
+          if (worstKind == null ||
+              (worstKind != TogetherConnectFailureKind.relayTimeout &&
+                  kind == TogetherConnectFailureKind.relayTimeout)) {
+            worstKind = kind;
+            worstDetail = e.toString();
+          }
+          if (kDebugMode) {
+            debugPrint('Together: ${relay.label} failed: $e');
+          }
           try {
             client.disconnect();
           } catch (_) {}
           continue;
         }
         if (client.connectionStatus?.state != MqttConnectionState.connected) {
+          worstKind ??= TogetherConnectFailureKind.relayUnreachable;
+          worstDetail ??= 'broker did not confirm the connection';
           try {
             client.disconnect();
           } catch (_) {}
           continue;
         }
         _client = client;
+        _connectedRelayLabel = relay.label;
+        _lastFailure = null;
         final topic = togetherTopicFor(otp);
         client.subscribe(topic, MqttQos.atLeastOnce);
         unawaited(_updatesSub?.cancel());
         _updatesSub = client.updates?.listen(_onMessages);
-        return true;
+        return null;
       }
-      return false;
+      final failure = TogetherConnectFailure(
+        kind: worstKind ?? TogetherConnectFailureKind.relayUnreachable,
+        triedRelays: List.unmodifiable(attempted),
+        detail: worstDetail,
+      );
+      _lastFailure = failure;
+      return failure;
     } finally {
       _connecting = false;
     }
@@ -924,6 +1120,8 @@ class TogetherService extends ChangeNotifier {
     _reconnectTimer?.cancel();
     _reconnectAttempt = 0;
     _reconnecting = true;
+    _connectedRelayLabel = null;
+    _roundTripMs = null;
     notifyListeners();
     _attemptReconnect();
   }
@@ -940,12 +1138,11 @@ class TogetherService extends ChangeNotifier {
       _reconnecting = false;
       return;
     }
-    const delays = kTogetherReconnectDelaysSeconds;
-    final delaySeconds = delays[_reconnectAttempt.clamp(0, delays.length - 1)];
-    _reconnectTimer = Timer(Duration(seconds: delaySeconds), () async {
+    final delay = togetherReconnectDelay(_reconnectAttempt);
+    _reconnectTimer = Timer(delay, () async {
       if (_disposed || !isSessionActive) return;
-      final ok = await _connectAndSubscribe();
-      if (ok) {
+      final failure = await _connectAndSubscribe();
+      if (failure == null) {
         _reconnecting = false;
         _reconnectAttempt = 0;
         _error = null;
@@ -957,10 +1154,13 @@ class TogetherService extends ChangeNotifier {
       if (_reconnectAttempt >= kTogetherMaxReconnectAttempts) {
         _reconnecting = false;
         _phase = TogetherPhase.error;
-        _error = kTogetherRelayUnreachableMessage;
+        // The classified failure, not a generic line: it names the
+        // relays tried and what actually failed.
+        _error = failure.message;
         notifyListeners();
         return;
       }
+      notifyListeners();
       _attemptReconnect();
     });
   }
@@ -983,6 +1183,7 @@ class TogetherService extends ChangeNotifier {
   void _disconnect() {
     _cancelReconnect();
     _intentionalDisconnect = true;
+    _connectedRelayLabel = null;
     _updatesSub?.cancel();
     _updatesSub = null;
     final client = _client;
@@ -1045,6 +1246,17 @@ class TogetherService extends ChangeNotifier {
     }
     final kind = json['kind'] as String?;
     final senderId = json['senderId'] as String?;
+    // Own heartbeat, echoed back by the broker (we subscribe to our own
+    // topic): its `timestampMs` is when we sent it, so the gap is the
+    // real MQTT round-trip. Measured every heartbeat (2 s), never guessed.
+    if (senderId == clientId && kind == 'heartbeat') {
+      final sentMs = (json['timestampMs'] as num?)?.toInt();
+      if (sentMs != null) {
+        final rtt = DateTime.now().millisecondsSinceEpoch - sentMs;
+        if (rtt >= 0 && rtt < 30000) _noteRoundTrip(rtt);
+      }
+      return;
+    }
     // Own messages come back from the broker too (we are subscribed to our
     // own topic); the local copy is already in the list.
     if (senderId == clientId && kind != 'state') return;
@@ -1061,6 +1273,17 @@ class TogetherService extends ChangeNotifier {
         _handleStatus(json);
       case 'presence':
         _handlePresence(json);
+    }
+  }
+
+  /// Records a measured round-trip. Notifies only on the first
+  /// measurement or a change of 100 ms or more — heartbeats arrive every
+  /// 2 s and must not rebuild the room on every beat for a few ms of jitter.
+  void _noteRoundTrip(int rttMs) {
+    final previous = _roundTripMs;
+    _roundTripMs = rttMs;
+    if (previous == null || (rttMs - previous).abs() >= 100) {
+      notifyListeners();
     }
   }
 

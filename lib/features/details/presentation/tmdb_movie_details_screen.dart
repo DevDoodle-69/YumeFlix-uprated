@@ -29,7 +29,6 @@ import '../../sources/presentation/plugin_sources_sheet.dart';
 import '../../../../shared/widgets/thumbnail_error_placeholder.dart';
 import '../../../../shared/widgets/shimmer_placeholder.dart';
 import '../../../../shared/widgets/glass_card.dart';
-import '../../../../core/theme/design_tokens.dart';
 
 class TmdbMovieDetailsScreen extends ConsumerStatefulWidget {
   final int movieId;
@@ -687,7 +686,7 @@ class _TmdbMovieDetailsScreenState
                             context,
                             Icons.star_rounded,
                             rating,
-                            iconColor: YumeDesign.amber,
+                            iconColor: Colors.white,
                           ),
                           if (runtime > 0)
                             _buildIconInfo(
@@ -849,10 +848,10 @@ class _TmdbMovieDetailsScreenState
                     const SizedBox(height: 5),
                     Container(
                       width: 28,
-                      height: 3,
+                      height: 2,
                       decoration: BoxDecoration(
-                        gradient: YumeDesign.accentGradient,
-                        borderRadius: BorderRadius.circular(2),
+                        color: Colors.white.withValues(alpha: 0.35),
+                        borderRadius: BorderRadius.circular(1),
                       ),
                     ),
                   ],

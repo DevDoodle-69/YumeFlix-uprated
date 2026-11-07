@@ -50,7 +50,7 @@ const Color _kPanelSurfaceOpaque = Color(0xFF060608);
 /// Row background when focused. Solid rather than a scrim so it reads at a
 /// distance on a television.
 const Color _kRowFocused = Color(0xFF1E2530);
-const Color _kRowSelected = Color(0x141F80E0);
+const Color _kRowSelected = Color(0x146B84A0); // 2.7.0: muted slate-blue selection wash, was bright blue.
 
 /// How a row shows focus, selection and hover, in that order of precedence.
 BoxDecoration panelRowDecoration({

@@ -74,10 +74,16 @@ class DiscordPresenceService extends ChangeNotifier {
   /// External media-proxy artwork is resolved in the context of this app.
   static const String applicationId = '1322319281819488256';
 
-  /// Asset key uploaded under the Discord application's Rich Presence assets.
-  /// Used as the small image next to a poster cover, and as the large image
-  /// fallback when no valid https poster URL is available.
-  static const String discordLargeImageKey = 'yumeflix_logo';
+  // NOTE (2.7.0): there used to be a `discordLargeImageKey = 'yumeflix_logo'`
+  // constant here, sent as large_image whenever no poster was available and
+  // as small_image beside every poster. It was removed on purpose: the key
+  // appears nowhere else in the repo — no uploaded-asset record, no asset
+  // file — and an asset key Discord has never been given renders as a black
+  // circle, which is exactly the symptom users reported on every movie.
+  // Until a Rich Presence asset is actually uploaded under this application
+  // id and its key verified, NO asset key is ever sent: no verified poster
+  // means no `assets` object at all, and a verified poster is sent on its
+  // own, with no small image. See [buildActivity].
 
   WebSocket? _socket;
   Timer? _heartbeat;
@@ -96,6 +102,8 @@ class DiscordPresenceService extends ChangeNotifier {
   String? _posterUrl;
   String? _extensionPosterUrl;
   String? _tmdbPosterUrl;
+  String? _cinemetaPosterUrl;
+  String? _imdbId;
   String? _artworkLookupKey;
   final DiscordArtworkResolver _artworkResolver = DiscordArtworkResolver();
   Duration _position = Duration.zero;
@@ -109,10 +117,51 @@ class DiscordPresenceService extends ChangeNotifier {
   Duration? _lastSentDuration;
   bool _lastSentPlaying = false;
 
+  /// Diagnostics for Settings → Discord: what the last Gateway op-3
+  /// actually carried, so the cover can be checked on-device instead of
+  /// guessed from code. Null until the first presence update is sent.
+  String? _lastSentLargeImage;
+  String? _lastSentTitle;
+
+  /// Where the last sent cover came from: 'tmdb', 'extension', 'cinemeta',
+  /// or 'none' when the activity was sent with no image at all.
+  String _lastPosterSource = 'none';
+
+  /// Human-readable outcome of the last artwork resolution attempt, e.g.
+  /// which candidate failed verification and what was used instead.
+  String? _lastArtworkNote;
+
+  /// Guards [_refreshVerifiedPoster]: a run already in flight defers the
+  /// next request instead of stacking parallel HEAD/GET verifications.
+  bool _verifyingPoster = false;
+  bool _verifyPosterPending = false;
+
   bool get enabled => _enabled;
   bool get isConnected => _connectionState == DiscordConnectionState.connected;
   DiscordConnectionState get connectionState => _connectionState;
   DiscordAccountProfile? get profile => _profile;
+
+  /// Exact `large_image` value carried by the last presence update sent to
+  /// Discord, or null when the last update carried no image. This is the
+  /// ground truth for the Settings → Discord diagnostics row.
+  String? get lastSentLargeImage => _lastSentLargeImage;
+
+  /// Title carried by the last presence update sent, or null if none sent.
+  String? get lastSentTitle => _lastSentTitle;
+
+  /// When the last presence update was sent, or null if none sent.
+  DateTime? get lastSentAt => _lastSentAt;
+
+  /// Source of the last sent cover: 'tmdb', 'extension', 'cinemeta', 'none'.
+  String get lastPosterSource => _lastPosterSource;
+
+  /// Outcome of the last artwork resolution attempt, or null before the
+  /// first attempt.
+  String? get lastArtworkNote => _lastArtworkNote;
+
+  /// The currently verified poster that will be (or was) sent as
+  /// `large_image`, or null when no candidate has verified yet.
+  String? get currentPosterUrl => _posterUrl;
 
   /// Configures the existing token-based connection without ever logging or
   /// exposing the token to the UI. An invalid token stops retries until the
@@ -147,6 +196,7 @@ class DiscordPresenceService extends ChangeNotifier {
     required String tmdbSearchTitle,
     required String tmdbMediaType,
     int? tmdbId,
+    String? imdbId,
     required Duration position,
     required Duration duration,
     required bool playing,
@@ -154,6 +204,7 @@ class DiscordPresenceService extends ChangeNotifier {
     _title = title;
     _state = state;
     _extensionPosterUrl = normalizePosterUrl(posterUrl);
+    _imdbId = imdbId?.trim().isEmpty == true ? null : imdbId?.trim();
     final searchTitle = tmdbSearchTitle.trim().isEmpty
         ? title.trim()
         : tmdbSearchTitle.trim();
@@ -161,20 +212,35 @@ class DiscordPresenceService extends ChangeNotifier {
         ? 'tv'
         : 'movie';
     final keyFingerprint = TmdbConfig.apiKey.hashCode.toRadixString(16);
+    // The lookup key covers everything that can change the cover: a new
+    // title/id, a different extension poster, or a different IMDb id for the
+    // keyless Cinemeta fallback. Playback ticks reuse the same key and so
+    // never re-verify or re-fetch artwork.
     final lookupKey =
-        '$mediaType|id:${tmdbId ?? 0}|${searchTitle.toLowerCase()}|$keyFingerprint';
+        '$mediaType|id:${tmdbId ?? 0}|imdb:${_imdbId ?? ''}|ext:${_extensionPosterUrl ?? ''}|${searchTitle.toLowerCase()}|$keyFingerprint';
     final lookupChanged = lookupKey != _artworkLookupKey;
     if (lookupChanged) {
       _artworkLookupKey = lookupKey;
       _tmdbPosterUrl = null;
+      _cinemetaPosterUrl = null;
+      // The previously verified poster belongs to the previous item: drop
+      // it now so the next presence update cannot carry a stale cover while
+      // the new candidates are being verified.
+      _posterUrl = null;
+      _lastPosterSource = 'none';
+      _lastArtworkNote = 'Checking artwork…';
+      _lastSentSignature = null;
     }
     // The extension knows the exact artwork for the item it resolved, but
     // Discord's media proxy does not fetch every host the app itself can
     // load. A TMDB poster (image.tmdb.org) is the one host the proxy
     // reliably serves, so it outranks an extension poster from any other
     // host; the extension URL still wins when it already lives on
-    // image.tmdb.org or when TMDB has nothing for this title.
-    _posterUrl = _effectivePoster();
+    // image.tmdb.org or when TMDB has nothing for this title. Nothing is
+    // sent as the cover until it has been fetch-verified — see
+    // [_refreshVerifiedPoster] — so [_posterUrl] stays null here and the
+    // presence goes out imageless first, then again with the cover once a
+    // candidate verifies.
     _position = position < Duration.zero ? Duration.zero : position;
     _duration = duration < Duration.zero ? Duration.zero : duration;
     _playing = playing;
@@ -188,6 +254,7 @@ class DiscordPresenceService extends ChangeNotifier {
           tmdbId: tmdbId,
         ),
       );
+      unawaited(_refreshVerifiedPoster(lookupKey: lookupKey));
     }
     if (_enabled && _ready) await _sendPresence();
   }
@@ -206,16 +273,109 @@ class DiscordPresenceService extends ChangeNotifier {
     if (_artworkLookupKey != lookupKey) return;
 
     _tmdbPosterUrl = normalizePosterUrl(poster);
-    // Recompute instead of keeping the extension URL unconditionally: a
-    // present-but-unfetchable extension poster used to block the TMDB
-    // fallback forever, because the resolved poster always preferred the
-    // extension URL and this early return then saw no change.
-    final resolvedPoster = _effectivePoster();
-    if (_posterUrl == resolvedPoster) return;
-    _posterUrl = resolvedPoster;
-    _lastSentSignature = null;
-    if (_enabled && _ready && _title?.trim().isNotEmpty == true) {
-      await _sendPresence(force: true);
+    // A TMDB poster that arrived late outranks an already-verified
+    // extension poster, so re-run verification instead of keeping the
+    // extension URL unconditionally.
+    unawaited(_refreshVerifiedPoster(lookupKey: lookupKey));
+  }
+
+  /// Picks the first fetch-verified poster, in priority order, and
+  /// re-publishes the presence with it.
+  ///
+  /// Priority: TMDB poster (image.tmdb.org, the host Discord's media proxy
+  /// serves most reliably) → extension poster → keyless Cinemeta poster
+  /// (only fetched when neither of the first two verified, and only when
+  /// the item carries an IMDb id). A candidate that fails verification
+  /// (non-200, non-image, unreachable) never blocks the next one, and when
+  /// nothing verifies the activity is re-sent with no image at all — never
+  /// with a dead asset key.
+  ///
+  /// Runs only when the artwork lookup changes (or a late TMDB result
+  /// arrives), never per playback tick: verification results are cached in
+  /// the resolver. Concurrent calls collapse into one run plus a single
+  /// deferred re-run.
+  Future<void> _refreshVerifiedPoster({required String lookupKey}) async {
+    if (_verifyingPoster) {
+      _verifyPosterPending = true;
+      return;
+    }
+    _verifyingPoster = true;
+    try {
+      // Re-check the lookup key at every await boundary: the user may have
+      // started a different title while verification was in flight.
+      if (_artworkLookupKey != lookupKey) return;
+      final mediaType = lookupKey.split('|').first;
+      final candidates = <({String url, String source})>[
+        if (_tmdbPosterUrl != null)
+          (url: _tmdbPosterUrl!, source: 'tmdb'),
+        if (_extensionPosterUrl != null)
+          (url: _extensionPosterUrl!, source: 'extension'),
+      ];
+      // De-duplicate: the extension poster and the TMDB poster are often
+      // the same image.tmdb.org URL, and verifying it twice is pure waste.
+      final seen = <String>{};
+      final deduped = candidates.where((c) => seen.add(c.url)).toList();
+
+      String? verified;
+      String? verifiedSource;
+      final failed = <String>[];
+      for (final candidate in deduped) {
+        if (_artworkLookupKey != lookupKey) return;
+        if (await _artworkResolver.verifyPosterUrl(candidate.url)) {
+          verified = candidate.url;
+          verifiedSource = candidate.source;
+          break;
+        }
+        failed.add('${candidate.source} poster did not verify');
+      }
+
+      // Keyless fallback, only when the first two sources had nothing
+      // verified and the item carries an IMDb id. Cinemeta needs no key,
+      // which matters because the shipped TMDB key is unset (see
+      // [DiscordArtworkResolver.resolveKeyless]).
+      if (verified == null && _artworkLookupKey == lookupKey) {
+        final cinemeta = _cinemetaPosterUrl ??
+            await _artworkResolver.resolveKeyless(
+              imdbId: _imdbId,
+              mediaType: mediaType,
+            );
+        if (_artworkLookupKey != lookupKey) return;
+        _cinemetaPosterUrl = normalizePosterUrl(cinemeta);
+        final cinemetaUrl = _cinemetaPosterUrl;
+        if (cinemetaUrl != null &&
+            !seen.contains(cinemetaUrl) &&
+            await _artworkResolver.verifyPosterUrl(cinemetaUrl)) {
+          verified = cinemetaUrl;
+          verifiedSource = 'cinemeta';
+        } else if (cinemetaUrl != null) {
+          failed.add('cinemeta poster did not verify');
+        }
+      }
+
+      if (_artworkLookupKey != lookupKey) return;
+      final changed = _posterUrl != verified;
+      _posterUrl = verified;
+      _lastPosterSource = verifiedSource ?? 'none';
+      _lastArtworkNote = verified == null
+          ? (failed.isEmpty
+                ? 'No poster available — activity sent without a cover.'
+                : '${failed.join('; ')} — activity sent without a cover.')
+          : 'Cover verified (${verifiedSource ?? 'unknown'}).';
+      if (changed) _lastSentSignature = null;
+      notifyListeners();
+      if (changed &&
+          _enabled &&
+          _ready &&
+          _title?.trim().isNotEmpty == true) {
+        await _sendPresence(force: true);
+      }
+    } finally {
+      _verifyingPoster = false;
+      if (_verifyPosterPending) {
+        _verifyPosterPending = false;
+        final key = _artworkLookupKey;
+        if (key != null) unawaited(_refreshVerifiedPoster(lookupKey: key));
+      }
     }
   }
 
@@ -225,7 +385,13 @@ class DiscordPresenceService extends ChangeNotifier {
     _posterUrl = null;
     _extensionPosterUrl = null;
     _tmdbPosterUrl = null;
+    _cinemetaPosterUrl = null;
+    _imdbId = null;
     _artworkLookupKey = null;
+    _lastPosterSource = 'none';
+    _lastArtworkNote = null;
+    _lastSentLargeImage = null;
+    _lastSentTitle = null;
     _playing = false;
     _position = Duration.zero;
     _duration = Duration.zero;
@@ -456,18 +622,35 @@ class DiscordPresenceService extends ChangeNotifier {
       },
     });
     if (!_ready) return;
+    // Record exactly what Discord was sent, for the Settings → Discord
+    // diagnostics row: the large_image value (or its absence) is the ground
+    // truth about the cover, not what the code hoped to send.
     _lastSentSignature = signature;
     _lastSentAt = now;
     _lastSentPosition = _position;
     _lastSentDuration = _duration;
     _lastSentPlaying = _playing;
+    _lastSentTitle = _title;
+    final sentAssets = activity['assets'];
+    _lastSentLargeImage = sentAssets is Map
+        ? sentAssets['large_image'] as String?
+        : null;
+    notifyListeners();
   }
 
   /// Builds the Gateway activity with Discord's media-proxy-compatible
-  /// external poster URL. When a valid absolute https poster URL is
-  /// available it becomes the large image (with the title as large text)
-  /// and the YumeFlix logo drops to the small image; otherwise the logo
-  /// stays the large image. Exposed for focused payload tests.
+  /// external poster URL. Only a caller-verified https poster URL becomes
+  /// the large image (with the title as large text). When there is no
+  /// verified poster the activity carries NO `assets` object at all.
+  ///
+  /// That omission is deliberate and is the 2.7.0 cover fix: the old code
+  /// fell back to the `yumeflix_logo` asset key here, but that key was
+  /// never uploaded under application 1322319281819488256, and Discord
+  /// renders an unknown asset key as a black circle — the exact symptom
+  /// reported on every movie. A missing cover is honest; a dead key looks
+  /// broken. No small image is sent either, for the same reason: the only
+  /// small-image key ever used was the same unproven one.
+  /// Exposed for focused payload tests.
   @visibleForTesting
   static Map<String, dynamic> buildActivity({
     required String title,
@@ -500,7 +683,10 @@ class DiscordPresenceService extends ChangeNotifier {
     // Discord's media proxy only fetches external artwork over https, so
     // only a normalized https poster URL may become the large image.
     // normalizePosterUrl() upgrades http to https, so anything it returns
-    // is safe to send as large_image.
+    // is safe to send as large_image. Callers must only pass a URL that
+    // has already been fetch-verified (see _refreshVerifiedPoster); this
+    // method itself is pure and trusts its input, which is why the
+    // payload tests can exercise it directly.
     final normalizedPoster = normalizePosterUrl(posterUrl);
     final posterUri = normalizedPoster == null
         ? null
@@ -509,17 +695,10 @@ class DiscordPresenceService extends ChangeNotifier {
       activity['assets'] = {
         'large_image': normalizedPoster,
         'large_text': _truncate(title.trim(), 128),
-        'small_image': discordLargeImageKey,
-        'small_text': 'YumeFlix',
-      };
-    } else {
-      // No usable poster: fall back to the uploaded application asset so
-      // the activity still shows the YumeFlix logo.
-      activity['assets'] = {
-        'large_image': discordLargeImageKey,
-        'large_text': 'YumeFlix',
       };
     }
+    // No verified poster: no `assets` key at all. Never send an asset key
+    // Discord has not been given — it renders as a black circle.
     return activity;
   }
 
@@ -549,30 +728,30 @@ class DiscordPresenceService extends ChangeNotifier {
   /// because Discord's media proxy reliably fetches image.tmdb.org and
   /// silently drops artwork from hosts it cannot reach. When both live on
   /// the same host the extension URL wins, so the activity shows the same
-  /// cover the viewer sees in YumeFlix. A rejected extension URL never
-  /// blocks the TMDB fallback, and with neither usable the caller falls
-  /// back to the YumeFlix logo. Exposed for focused fallback-chain tests.
+  /// cover the viewer sees in YumeFlix. The keyless Cinemeta poster ranks
+  /// last: it is the fallback for when neither of the first two is usable.
+  /// A rejected extension URL never blocks the next fallback, and with
+  /// neither usable the result is null — the caller then sends no image
+  /// rather than a dead asset key. Exposed for focused fallback-chain tests.
   @visibleForTesting
   static String? selectEffectivePoster({
     String? extensionPosterUrl,
     String? tmdbPosterUrl,
+    String? cinemetaPosterUrl,
   }) {
     final extension = normalizePosterUrl(extensionPosterUrl);
     final tmdb = normalizePosterUrl(tmdbPosterUrl);
-    if (extension == null) return tmdb;
+    final cinemeta = normalizePosterUrl(cinemetaPosterUrl);
+    if (extension == null) return tmdb ?? cinemeta;
     if (tmdb == null) return extension;
-    return _posterRank(tmdb) < _posterRank(extension) ? tmdb : extension;
+    final best = _posterRank(tmdb) < _posterRank(extension) ? tmdb : extension;
+    return best;
   }
 
   static int _posterRank(String normalizedUrl) {
     final host = Uri.tryParse(normalizedUrl)?.host.toLowerCase() ?? '';
     return host == 'image.tmdb.org' ? 0 : 1;
   }
-
-  String? _effectivePoster() => selectEffectivePoster(
-    extensionPosterUrl: _extensionPosterUrl,
-    tmdbPosterUrl: _tmdbPosterUrl,
-  );
 
   /// Discord fetches this image from its media proxy, so only absolute public
   /// HTTPS URLs can be used. Plain http is upgraded to https, protocol-

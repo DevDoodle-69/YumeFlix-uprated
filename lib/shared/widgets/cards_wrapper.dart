@@ -11,7 +11,7 @@ import '../focus/app_focus.dart';
 ///
 /// What was here before was three accent-coloured layers at once - a 3 dp
 /// `colorScheme.primary` ring, an 18 % primary wash painted *over* the poster,
-/// and a primary glow behind it. Any one of them reads; all three at once
+/// and a primary coloured shadow behind it. Any one of them reads; all three at once
 /// recolour the artwork they are supposed to be pointing at, which is why no
 /// ten-foot interface of this kind uses an accent for focus. A neutral border
 /// separates from every poster, because a poster can be any colour but the
@@ -37,8 +37,8 @@ class CardFocusAffordance {
   static const double ringWidth = AppFocus.ringWidth;
 
   /// The layer behind the child: the shadow that lifts a focused card off the
-  /// page. Black, not accent - see this class's summary.
-  static BoxDecoration glow({
+  /// page. Plain black, not accent - see this class's summary.
+  static BoxDecoration shadow({
     required BorderRadius borderRadius,
     required bool focused,
   }) {
@@ -330,7 +330,7 @@ class _CardsWrapperState extends State<CardsWrapper>
               // an AnimationController in initState, and a rail holds hundreds
               // of cards that are never focused at all.
               final card = Container(
-                decoration: CardFocusAffordance.glow(
+                decoration: CardFocusAffordance.shadow(
                   borderRadius: borderRadius,
                   focused: showFocus,
                 ),

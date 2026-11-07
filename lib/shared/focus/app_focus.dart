@@ -26,8 +26,8 @@
 /// belongs to, plus a soft black shadow to lift it off whatever is behind.
 /// Cards add a small scale. That is the Netflix and Prime Video convention and
 /// it is the convention for a reason: an accent-coloured ring competes with
-/// the artwork it surrounds, and a coloured glow wide enough to read from a
-/// sofa is a coloured glow wide enough to look broken on a phone. The app used
+/// the artwork it surrounds, and a coloured shadow wide enough to read from a
+/// sofa is a coloured shadow wide enough to look broken on a phone. The app used
 /// to paint `colorScheme.primary` at three or four places at once - a 2-3 dp
 /// accent border, an 18-24 % accent wash over the poster, and a 24 dp accent
 /// blur behind it. This is one border and one shadow.
@@ -262,7 +262,7 @@ abstract final class AppFocus {
       : BorderSide.none;
 
   /// The lift under a focused element: a plain black shadow, not a coloured
-  /// glow. It separates the ring from whatever is behind it without adding a
+  /// shadow. It separates the ring from whatever is behind it without adding a
   /// second colour to the screen, and over this app's black surfaces it costs
   /// nothing because there is nothing for it to darken.
   ///

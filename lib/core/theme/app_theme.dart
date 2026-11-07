@@ -34,15 +34,14 @@ class AppTheme {
     });
   }
 
-  // Premium Colors — 2.6.0 "liquid glass over deep space". The canvas is
-  // darker than 2.5.0 so poster artwork and glass panels carry the colour;
-  // the accent is the violet → teal → rose ramp in [YumeDesign].
+  // 2.7.0 minimal colours: near-black charcoal canvas, white/grey text,
+  // and one restrained muted slate-blue accent (see [YumeDesign]).
   static const Color background = YumeDesign.background;
   static const Color surface = YumeDesign.surface;
   static const Color surfaceHighlight = YumeDesign.surfaceRaised;
-  static const Color primary = YumeDesign.violet; // Hero violet
-  static const Color primaryVariant = YumeDesign.violetDeep; // Deep violet
-  static const Color secondary = YumeDesign.teal; // Soft teal
+  static const Color primary = YumeDesign.accent;
+  static const Color primaryVariant = YumeDesign.accent;
+  static const Color secondary = YumeDesign.accent;
   static const Color error = Color(0xFFEF4444);
   static const Color onSurface = YumeDesign.textPrimary;
   static const Color textSecondary = YumeDesign.textSecondary;
@@ -55,7 +54,7 @@ class AppTheme {
   ); // surfaceContainerHigh
   static const Color lightTextPrimary = Color(0xFF2C2521); // onSurface
   static const Color lightTextSecondary = Color(0xFF5C5C5C); // onSurfaceVariant
-  static const Color lightCoral = Color(0xFF4657C7); // Indigo Accent
+  static const Color lightCoral = Color(0xFF4E6478); // Muted slate-blue
 
   static SnackBarThemeData snackBarThemeFor(ColorScheme colorScheme) {
     final isDark = colorScheme.brightness == Brightness.dark;
@@ -118,41 +117,42 @@ class AppTheme {
 
   static ThemeData createDarkTheme(
     ColorScheme? dynamicScheme, {
+    // Accepted for call-site compatibility and intentionally ignored:
+    // 2.7.0 never tints the canvas or surfaces with artwork colour. The
+    // canvas is always the single neutral [YumeDesign.background] and the
+    // only accent is the muted slate-blue in [YumeDesign.accent].
     Color? accent,
   }) {
     _registerFontLicence();
+    // A dynamic (Material You) scheme is neutralised the same way: its
+    // seed colour never reaches the canvas or the accent.
     var colorScheme =
         dynamicScheme ??
         ColorScheme.fromSeed(
-          seedColor: accent ?? YumeDesign.violet, // Hero artwork accent
+          seedColor: YumeDesign.accent,
           brightness: Brightness.dark,
-          surface: const Color(0xFF080B18), // Midnight surface
+          surface: YumeDesign.background,
         );
 
-    final appBackground = accent == null
-        ? background
-        : Color.lerp(background, accent, 0.16)!;
-    final appSurface = accent == null
-        ? surface
-        : Color.lerp(surface, accent, 0.18)!;
-    final appHighlight = accent == null
-        ? surfaceHighlight
-        : Color.lerp(surfaceHighlight, accent, 0.26)!;
+    const appBackground = background;
+    const appSurface = surface;
+    const appHighlight = surfaceHighlight;
 
-    // Carry the hero accent through every Material surface tier instead of
-    // changing only primary buttons and logos. The interpolation remains
-    // restrained so text contrast and TV readability stay stable.
     colorScheme = colorScheme.copyWith(
       surface: appBackground,
-      surfaceContainerLowest: Color.lerp(background, accent, 0.08),
-      surfaceContainerLow: Color.lerp(background, accent, 0.12),
-      surfaceContainer: Color.lerp(background, accent, 0.16),
-      surfaceContainerHigh: Color.lerp(background, accent, 0.21),
-      surfaceContainerHighest: Color.lerp(background, accent, 0.27),
-      primary: accent ?? colorScheme.primary,
-      secondary: accent == null
-          ? colorScheme.secondary
-          : HSLColor.fromColor(accent).withLightness(0.62).toColor(),
+      surfaceContainerLowest: background,
+      surfaceContainerLow: surface,
+      surfaceContainer: surface,
+      surfaceContainerHigh: surfaceHighlight,
+      surfaceContainerHighest: YumeDesign.surfaceHighest,
+      primary: YumeDesign.accent,
+      onPrimary: Colors.white,
+      secondary: YumeDesign.accent,
+      tertiary: YumeDesign.accent,
+      onSurface: YumeDesign.textPrimary,
+      onSurfaceVariant: YumeDesign.textSecondary,
+      outline: YumeDesign.hairlineStrong,
+      outlineVariant: YumeDesign.hairline,
     );
 
     return ThemeData(
@@ -160,7 +160,7 @@ class AppTheme {
       brightness: Brightness.dark,
       fontFamily: fontFamily,
       scaffoldBackgroundColor: appBackground,
-      // Dialog Theme (Premium Grey) — 2.6.0: large glass radius.
+      // Dialog Theme — 2.7.0: restrained neutral radius.
       dialogTheme: DialogThemeData(
         backgroundColor: appSurface,
         surfaceTintColor: Colors.transparent,
@@ -175,7 +175,7 @@ class AppTheme {
         ),
       ),
 
-      // Bottom Sheet Theme (Premium Grey) — 2.6.0: large glass radius.
+      // Bottom Sheet Theme — 2.7.0: restrained neutral radius.
       bottomSheetTheme: BottomSheetThemeData(
         backgroundColor: appSurface,
         surfaceTintColor: Colors.transparent,
@@ -187,7 +187,7 @@ class AppTheme {
         ),
       ),
 
-      // Card Theme (Pitch Black for List Items) — 2.6.0: one card radius.
+      // Card Theme — 2.7.0: one neutral card radius.
       cardTheme: CardThemeData(
         color: appSurface,
         surfaceTintColor: Colors.transparent,
@@ -201,7 +201,7 @@ class AppTheme {
       // Material 3 Color Scheme
       colorScheme: colorScheme,
 
-      // Typography — 2.6.0 type scale (see YumeDesign): tighter display,
+      // Typography — type scale (see YumeDesign): tighter display,
       // bolder section titles, same Outfit family.
       textTheme: ThemeData.dark().textTheme
           .apply(fontFamily: fontFamily)
@@ -298,20 +298,20 @@ class AppTheme {
       // of Material's default inverse (light) surface.
       snackBarTheme: snackBarThemeFor(colorScheme),
 
-      // Input Decoration — 2.6.0: 20 dp glass radius.
+      // Input Decoration — 2.7.0: restrained 12 dp radius, hairline border.
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: appSurface,
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide.none,
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide.none,
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(color: colorScheme.primary, width: 2),
         ),
         contentPadding: const EdgeInsets.symmetric(
@@ -320,7 +320,7 @@ class AppTheme {
         ),
       ),
 
-      // Chip Theme — 2.6.0: one pill language for filter chips.
+      // Chip Theme — 2.7.0: one pill language for filter chips.
       chipTheme: ChipThemeData(
         backgroundColor: appSurface,
         disabledColor: colorScheme.onSurface.withValues(alpha: 0.12),
@@ -378,23 +378,25 @@ class AppTheme {
 
   static ThemeData createLightTheme(
     ColorScheme? dynamicScheme, {
+    // Accepted for call-site compatibility and intentionally ignored:
+    // 2.7.0 never tints the light theme with artwork colour either.
     Color? accent,
   }) {
     _registerFontLicence();
     final colorScheme =
         const ColorScheme.light(
-          primary: Color(0xFF4657C7),
+          primary: Color(0xFF4E6478),
           onPrimary: Colors.white,
-          primaryContainer: Color(0xFFDDE1FF),
-          onPrimaryContainer: Color(0xFF111A5C),
-          secondary: Color(0xFF2B7774),
+          primaryContainer: Color(0xFFDDE3E8),
+          onPrimaryContainer: Color(0xFF1A2530),
+          secondary: Color(0xFF4E6478),
           onSecondary: Colors.white,
           secondaryContainer: lightSurfaceHighlight,
-          onSecondaryContainer: Color(0xFF0A2B2A),
-          tertiary: Color(0xFF2B9C99),
+          onSecondaryContainer: Color(0xFF1A2530),
+          tertiary: Color(0xFF4E6478),
           onTertiary: Colors.white,
-          tertiaryContainer: Color(0xFFC6F4F0),
-          onTertiaryContainer: Color(0xFF082A28),
+          tertiaryContainer: Color(0xFFDDE3E8),
+          onTertiaryContainer: Color(0xFF1A2530),
           surface: lightBackground,
           onSurface: lightTextPrimary,
           onSurfaceVariant: lightTextSecondary,
@@ -408,7 +410,7 @@ class AppTheme {
           surfaceContainerHigh: lightSurfaceHighlight,
           surfaceContainerHighest: Color(0xFFE4D9C8),
         ).copyWith(
-          primary: accent ?? const Color(0xFF4657C7),
+          primary: const Color(0xFF4E6478),
           onPrimary: Colors.white,
         );
 

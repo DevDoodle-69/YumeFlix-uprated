@@ -38,7 +38,6 @@ import '../../../../core/logger/app_logger.dart';
 import '../../../together/together_player_hook.dart';
 import '../../../together/together_provider.dart';
 import '../../../together/presentation/together_chat_panel.dart';
-import '../../../together/presentation/floating_together_orb.dart';
 import '../../domain/network_buffer.dart';
 import '../../domain/smoothness.dart';
 import '../../domain/track_memory.dart';
@@ -779,6 +778,13 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       media: togetherMediaIdentityFor(item: widget.item, episode: _episode),
     );
     _togetherHook!.attach();
+    // The single root-mounted orb reads its chat action from the service
+    // while this player is open (its Start action is registered by the
+    // hook itself). Cleared in dispose, with the hook.
+    ref.read(togetherServiceProvider).registerOrbOpenChatAction(() {
+      ref.read(togetherServiceProvider).markChatRead();
+      if (mounted) setState(() => _togetherChatOpen = true);
+    });
     _chrome = ChromeVisibilityController(
       isPlaying: () => _controller.value.isPlaying,
     );
@@ -2876,6 +2882,13 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
         tmdbSearchTitle: widget.item.title,
         tmdbMediaType: isSeries ? 'tv' : 'movie',
         tmdbId: widget.item.tmdbId,
+        // The IMDb id drives the keyless Cinemeta poster fallback — the
+        // only cover source that works in builds shipped without a TMDB
+        // key. It is parsed from the plugin's syncData by
+        // MultimediaItem.fromJson (or enriched by the details controller);
+        // without it, a missing/unverifiable extension poster means no
+        // cover at all rather than a wrong one.
+        imdbId: widget.item.imdbId,
         position: value.position,
         duration: value.duration,
         playing: value.isPlaying,
@@ -3472,6 +3485,7 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     _locked.dispose();
     _togetherHook?.dispose();
     _togetherHook = null;
+    ref.read(togetherServiceProvider).registerOrbOpenChatAction(null);
     // After _disposed is set, so no late publisher writes to a dead notifier;
     // an open panel's builder may still unsubscribe, which a disposed
     // notifier allows.
@@ -3732,21 +3746,12 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
                   child: IgnorePointer(child: _statusPill(_status)),
                 ),
               // Together overlays, above the chrome and below the ended card:
-              // the movable glass "Enjoy Together" orb (Start lives on it now,
-              // so the old bottom Start button is gone — one Start, on the
-              // orb), the guest's "Host controls playback" pill, the
-              // wrong-title hint for a guest who opened a different title,
-              // and the glass chat panel over the video.
-              if (_togetherHook?.isSessionActive ?? false)
-                FloatingTogetherOrb(
-                  onStart: (_togetherHook?.showOrbStart ?? false)
-                      ? () => _togetherHook!.goLive()
-                      : null,
-                  onOpenChat: () {
-                    ref.read(togetherServiceProvider).markChatRead();
-                    setState(() => _togetherChatOpen = true);
-                  },
-                ),
+              // the guest's "Host controls playback" pill, the wrong-title
+              // hint for a guest who opened a different title, and the glass
+              // chat panel over the video. The floating orb itself is mounted
+              // once, above the router in main.dart — Start and chat reach
+              // this screen through the actions the hook / this screen
+              // register on the service.
               if (_togetherHook?.guestNeedsSameTitle ?? false)
                 Align(
                   alignment: Alignment.topCenter,

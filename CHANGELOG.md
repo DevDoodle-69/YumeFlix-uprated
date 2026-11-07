@@ -1,3 +1,22 @@
+# YumeFlix 2.7.0 — Discord cover fixed live, Together fixed live, minimal professional restyle, MovieSubLK provider
+
+### Discord cover — fixed for real (proven live)
+- Root cause: the TMDB fallback was dead in shipped builds (no TMDB key was ever set in CI, so the resolver always returned null), and the fallback large image was the `yumeflix_logo` asset key, which was never uploaded under the Discord app — a missing asset renders as the black circle seen on every movie.
+- Keyless poster chain: Cinemeta (`v3-cinemeta.strem.io/meta/<movie|series>/<imdbId>.json`, no key) resolves the exact poster by IMDb id; every candidate poster is verified fetchable (HTTP 200 + image/*, HEAD with ranged-GET fallback) before it is sent; if nothing verifies, no `assets` object is sent at all — never a dead asset key again. Extension poster, TMDB-by-id (when a key is configured), and Cinemeta all feed the chain. Movies still never show "S1 E1".
+- Settings -> Discord now shows diagnostics: connection state and the exact `large_image` value last sent, so the cover can be checked on-device.
+
+### Enjoy Together — the "check internet" error was a client bug, fixed live
+- Root cause: 2.6.0 built the MQTT client the one way `mqtt_client` forbids for secure websockets (`MqttServerClient.withPort` bare host + `useWebSocket = true` + `secure = true`); the `secure` flag silently turns the websocket off, so the client opened raw secure-TCP MQTT to a WebSocket-only port and the broker closed it every time, on any network. The error was then mislabelled as "check internet connection".
+- Fixed construction (`wss://<host>/mqtt` URL, `useWebSocket = true`, `secure` never set), EMQX first with Mosquitto fallback, bounded timeouts, reconnect with backoff, honest errors that name the relay tried and only mention the device connection when DNS/the OS proves it offline. Connection status pill in the room UI shows relay + measured round-trip latency.
+- The floating Together window is now mounted once above the router, so it stays visible all the time a room is active — while browsing, searching, opening details and picking a title — and survives every navigation. Tapping Start on it mirrors everything live: same title/poster, same position, play/pause/seek in sync (host controls, guest follows with drift correction). Re-sharing a different title clears the old state and re-syncs the guest cleanly; a paused host no longer makes the guest play.
+- `tools/live_check.dart` (run with `dart tools/live_check.dart`) verifies live: MQTT host/guest round-trip over the real broker, the Discord poster chain for Harry Potter and the Deathly Hallows: Part 2, and the MovieSubLK provider live.
+
+### MovieSubLK provider (new)
+- New `MovieSubLK` provider ported from the user's JHMSub() scraper (credit to JH a.k.a Dhika kept): search, details (poster, metadata, synopsis), series episodes from `seriesData`, movie streams from server1/server2 with gdrive/telegram/subtitle downloads. Note: moviesublk.com is now a Next.js app, not Blogger — the Blogger feed returns 404, so the port reads the live search page/API/detail pages with the Blogger feed as fallback. Enable Developer options -> Load asset plugins to see it.
+
+### Minimal professional restyle — no neon anywhere
+- All glowing neon colours, violet/teal/rose gradients, colour-mixing ambient backgrounds and glow pulses from 2.6.0 are removed. New language: near-black/charcoal neutrals, white and grey text, hairline borders, one restrained desaturated slate-blue accent, low-blur neutral glass only where it aids readability. The Together orb is a minimal monochrome glass pill (draggable, subtle press scale, no glow). Poster cards keep the cinematic shape with neutral scrims and monochrome chips. Applied to home, explore, details, player, library and settings. No functionality removed.
+
 # YumeFlix 2.6.0 — Totally New Version
 
 ### Discord cover — fixed for real

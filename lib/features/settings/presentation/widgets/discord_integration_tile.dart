@@ -165,27 +165,111 @@ class _DiscordIntegrationTileState
     );
   }
 
+  Widget _diagnosticsRow(
+    BuildContext context,
+    String label,
+    String value, {
+    bool selectable = false,
+  }) {
+    final theme = Theme.of(context);
+    final labelStyle = theme.textTheme.bodySmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant,
+      fontWeight: FontWeight.w600,
+    );
+    final valueStyle = theme.textTheme.bodySmall;
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 108, child: Text(label, style: labelStyle)),
+          Expanded(
+            child: selectable
+                ? SelectableText(value, style: valueStyle)
+                : Text(value, style: valueStyle),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// On-device ground truth for the Discord cover: the connection state
+  /// and the exact `large_image` value the last Gateway op-3 carried (or
+  /// its absence). When the cover is a black circle in Discord, this row
+  /// says whether YumeFlix sent a poster URL at all, which one, and what
+  /// the verification step concluded — instead of guessing from code.
+  Widget _diagnosticsCard(
+    BuildContext context,
+    DiscordPresenceService service,
+  ) {
+    final largeImage = service.lastSentLargeImage;
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 2, 16, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _diagnosticsRow(context, 'Connection', _statusText(service)),
+          _diagnosticsRow(
+            context,
+            'Last activity',
+            service.lastSentTitle ?? 'Nothing sent yet',
+          ),
+          _diagnosticsRow(
+            context,
+            'Cover source',
+            service.lastPosterSource,
+          ),
+          _diagnosticsRow(
+            context,
+            'large_image',
+            largeImage ??
+                'No cover sent — no poster verified as fetchable',
+            selectable: true,
+          ),
+          if (service.lastArtworkNote != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                service.lastArtworkNote!,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final service = DiscordPresenceService.instance;
     return AnimatedBuilder(
       animation: service,
-      builder: (context, _) => SettingsTile(
-        icon: Icons.forum_rounded,
-        title: 'Discord Integration',
-        subtitle: _statusText(service),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _accountAvatar(context, service.profile),
-            const SizedBox(width: 8),
-            Switch.adaptive(
-              value: _enabled && _token.isNotEmpty,
-              onChanged: _saving ? null : (_) => _openDialog(),
+      builder: (context, _) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SettingsTile(
+            icon: Icons.forum_rounded,
+            title: 'Discord Integration',
+            subtitle: _statusText(service),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _accountAvatar(context, service.profile),
+                const SizedBox(width: 8),
+                Switch.adaptive(
+                  value: _enabled && _token.isNotEmpty,
+                  onChanged: _saving ? null : (_) => _openDialog(),
+                ),
+              ],
             ),
-          ],
-        ),
-        onTap: _openDialog,
+            onTap: _openDialog,
+          ),
+          _diagnosticsCard(context, service),
+        ],
       ),
     );
   }

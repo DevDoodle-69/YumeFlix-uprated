@@ -10,15 +10,18 @@ import 'glass_card.dart';
 import 'shimmer_placeholder.dart';
 import 'thumbnail_error_placeholder.dart';
 
-/// The 2.6.0 poster card — the one card language for every rail, grid and
+/// The 2.7.0 poster card — the one card language for every rail, grid and
 /// search result in the app.
 ///
-/// * Large rounded corners ([YumeDesign.radiusCard], 22 dp).
-/// * A gradient scrim at the foot of the artwork carrying the title and a
-///   meta line (year • duration) *on* the card, so a rail reads as a shelf
-///   of posters rather than a shelf of posters plus a shelf of labels.
-/// * Glass chips for rating (top-left) and media type (top-right) when the
-///   caller passes them — small, blurred, never covering the title.
+/// * Restrained rounded corners ([YumeDesign.radiusCard], 16 dp).
+/// * A neutral black scrim at the foot of the artwork carrying the title
+///   and a meta line (year • duration) *on* the card, so a rail reads as a
+///   shelf of posters rather than a shelf of posters plus a shelf of
+///   labels. The scrim is monochrome — transparent to black — for text
+///   legibility only, never coloured.
+/// * Monochrome glass chips for rating (top-left) and media type
+///   (top-right) when the caller passes them — small, blurred, never
+///   covering the title.
 /// * Press / focus scale via [CardsWrapper] (1.06 on TV, 1.05 on touch),
 ///   with the focus ring and shadow the wrapper already provides.
 ///
@@ -34,7 +37,7 @@ class CinematicPosterCard extends ConsumerWidget {
   final bool isPortrait;
   final FocusNode? focusNode;
 
-  /// Rating out of 10, shown as a gold glass chip. Null hides the chip.
+  /// Rating out of 10, shown as a monochrome glass chip. Null hides it.
   final double? rating;
 
   /// Release year, shown in the meta line under the title.
@@ -48,7 +51,7 @@ class CinematicPosterCard extends ConsumerWidget {
 
   /// When false the title sits *below* the artwork (the old
   /// `titlePosition: below` setting) instead of on the scrim. The glass
-  /// chips and the 22 dp radius stay in both modes.
+  /// chips and the 16 dp radius stay in both modes.
   final bool titleInside;
 
   /// Explicit card width. Null means the rail default for the form factor.
@@ -188,12 +191,8 @@ class CinematicPosterCard extends ConsumerWidget {
                   bottomLeft: Radius.circular(YumeDesign.radiusCard),
                   bottomRight: Radius.circular(YumeDesign.radiusCard),
                 ),
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Colors.transparent, Colors.black87],
-                  stops: [0.0, 1.0],
-                ),
+                // Neutral black legibility scrim only (see YumeDesign).
+                gradient: YumeDesign.legibilityScrim,
               ),
               padding: const EdgeInsets.fromLTRB(12, 28, 12, 12),
               child: Column(

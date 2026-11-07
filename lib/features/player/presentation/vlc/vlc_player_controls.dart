@@ -196,7 +196,7 @@ class VlcPlayerControls extends ConsumerStatefulWidget {
   /// no chat button is rendered at all.
   final VoidCallback? onTogetherChat;
 
-  /// Whether a chat message arrived while the panel was closed: a glowing
+  /// Whether a chat message arrived while the panel was closed: a lit
   /// dot on the chat button until the panel is opened.
   final bool togetherChatHasUnread;
 
@@ -1591,14 +1591,6 @@ class _VlcPlayerControlsState extends ConsumerState<VlcPlayerControls> {
                     color: Theme.of(context).colorScheme.primary,
                     shape: BoxShape.circle,
                     border: Border.all(color: Colors.black, width: 1.5),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.primary.withValues(alpha: 0.8),
-                        blurRadius: 6,
-                      ),
-                    ],
                   ),
                 ),
               ),

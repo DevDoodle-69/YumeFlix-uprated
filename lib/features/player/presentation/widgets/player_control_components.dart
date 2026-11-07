@@ -856,7 +856,7 @@ class _PlayerActionButtonState extends State<PlayerActionButton> {
                         ? HotstarPlayerStyle.accent.withValues(alpha: 0.16)
                         : Colors.transparent,
                     borderRadius: BorderRadius.circular(8),
-                    // A white ring, and no glow behind it. The accent halo
+                    // A white ring, and no shadow behind it. The accent halo
                     // that used to sit here was a second cue for the state
                     // the ring already states, and over a bright scene it
                     // read as a smear rather than as an outline.

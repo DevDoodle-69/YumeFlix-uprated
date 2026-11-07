@@ -9,7 +9,6 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 
 import '../../../../core/utils/image_utils.dart';
-import '../../../../core/theme/artwork_palette.dart';
 import '../../../../core/theme/design_tokens.dart';
 import '../../../../core/utils/layout_constants.dart';
 import '../../../../shared/widgets/glass_card.dart';
@@ -118,7 +117,6 @@ class _ExploreCarouselState extends ConsumerState<ExploreCarousel>
       vsync: this,
       duration: const Duration(seconds: 4),
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) => _updateArtworkAccent());
     _fillController.addStatusListener((status) {
       if (status == AnimationStatus.completed && mounted) {
         _goToNextSlide();
@@ -139,18 +137,6 @@ class _ExploreCarouselState extends ConsumerState<ExploreCarousel>
     }
 
     _fillController.forward();
-  }
-
-  Future<void> _updateArtworkAccent() async {
-    if (!mounted || widget.movies.isEmpty) {
-      return;
-    }
-    final url = widget.movies[_currentSlide].backdropImageUrl;
-    final accent = await extractArtworkAccent(url);
-    if (!mounted || widget.movies[_currentSlide].backdropImageUrl != url) {
-      return;
-    }
-    ref.read(artworkAccentProvider.notifier).setAccent(accent);
   }
 
   void _goToNextSlide() {
@@ -174,7 +160,6 @@ class _ExploreCarouselState extends ConsumerState<ExploreCarousel>
       _isTransitioning = true;
     });
     _currentIndexNotifier.value = nextIndex;
-    _updateArtworkAccent();
     _transitionController.forward(from: 0.0);
     _restartFill();
   }
@@ -820,10 +805,10 @@ class _ExploreCarouselState extends ConsumerState<ExploreCarousel>
     String label, {
     bool isProvider = false,
   }) {
-    // 2.6.0: one chip language — the old hand-rolled bordered container is
-    // gone. The provider chip leads in violet; the type chip is neutral glass.
+    // 2.7.0: one chip language — the provider chip leads in the single
+    // muted accent; the type chip is neutral glass.
     if (isProvider) {
-      return GlassChip.accent(label, accent: YumeDesign.violet);
+      return GlassChip.accent(label);
     }
     return GlassChip(label: label);
   }
@@ -920,9 +905,9 @@ class _ProgressDotState extends State<_ProgressDot>
                         child: Container(
                           width: _activeWidth * widget.fillController.value,
                           height: _height,
-                          // 2.6.0: the auto-advance fill is the hero violet,
-                          // so the progress reads as part of the accent ramp.
-                          color: YumeDesign.violet,
+                          // 2.7.0: the auto-advance fill is the single
+                          // muted accent, flat — no gradient ramp.
+                          color: YumeDesign.accent,
                         ),
                       );
                     },

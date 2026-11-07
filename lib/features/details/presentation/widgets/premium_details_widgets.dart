@@ -110,7 +110,7 @@ class MetadataBar extends ConsumerWidget {
   }) {
     // 2.6.0: one chip language.
     if (isFilled) {
-      return GlassChip.accent(text, accent: color ?? YumeDesign.violet);
+      return GlassChip.accent(text, accent: color ?? YumeDesign.accent);
     }
     return GlassChip(label: text);
   }
@@ -133,8 +133,6 @@ class MetadataBar extends ConsumerWidget {
     return GlassChip(
       label: policy,
       icon: Icons.play_circle_outline_rounded,
-      accent: Theme.of(context).colorScheme.secondary,
-      filled: true,
     );
   }
 }

@@ -3,6 +3,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../../core/theme/design_tokens.dart';
+
 import '../together_service.dart';
 
 /// The guest waiting state: a live screen, never a dead one.
@@ -10,8 +12,9 @@ import '../together_service.dart';
 /// A guest who joins with the OTP before the host has started anything
 /// sees the host's real room status, pushed over MQTT — "Host is still
 /// finding a movie…" while the host browses, "Host picked X" once a title
-/// is chosen — with a breathing orb and pulsing dots so the screen reads
-/// as alive, a waiting clock, and the room's presence line.
+/// is chosen — with a static monochrome circle and pulsing dots so the
+/// screen reads as alive, a waiting clock, and the room's presence line.
+/// No breathing, no shadow.
 ///
 /// Two failure states, both real (never a local guess):
 /// * the host leaves ([TogetherService.hostGone], via `bye` / presence
@@ -40,13 +43,8 @@ class TogetherGuestWaitingState extends StatefulWidget {
       _TogetherGuestWaitingStateState();
 }
 
-class _TogetherGuestWaitingStateState extends State<TogetherGuestWaitingState>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _breathe = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1800),
-  )..repeat(reverse: true);
-
+class _TogetherGuestWaitingStateState
+    extends State<TogetherGuestWaitingState> {
   Timer? _clock;
 
   @override
@@ -63,7 +61,6 @@ class _TogetherGuestWaitingStateState extends State<TogetherGuestWaitingState>
   void dispose() {
     _clock?.cancel();
     widget.service.removeListener(_onServiceChanged);
-    _breathe.dispose();
     super.dispose();
   }
 
@@ -92,43 +89,26 @@ class _TogetherGuestWaitingStateState extends State<TogetherGuestWaitingState>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Breathing orb: the waiting screen is alive, not a spinner.
+        // Static monochrome circle: the waiting screen is calm, not a
+        // spinner — no breathing, no shadow. The pulsing dots below are
+        // the only motion.
         Center(
-          child: AnimatedBuilder(
-            animation: _breathe,
-            builder: (context, child) {
-              final t = 0.5 - 0.5 * math.cos(_breathe.value * math.pi);
-              return Transform.scale(
-                scale: 1.0 + 0.06 * t,
-                child: Container(
-                  width: 76,
-                  height: 76,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: colorScheme.primary.withValues(alpha: 0.16),
-                    border: Border.all(
-                      color: colorScheme.primary.withValues(
-                        alpha: 0.45 + 0.25 * t,
-                      ),
-                      width: 2,
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: colorScheme.primary.withValues(
-                          alpha: 0.25 + 0.2 * t,
-                        ),
-                        blurRadius: 26,
-                      ),
-                    ],
-                  ),
-                  child: Icon(
-                    Icons.group_rounded,
-                    size: 34,
-                    color: colorScheme.primary,
-                  ),
-                ),
-              );
-            },
+          child: Container(
+            width: 76,
+            height: 76,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: YumeDesign.surfaceRaised,
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.16),
+                width: 1,
+              ),
+            ),
+            child: const Icon(
+              Icons.group_rounded,
+              size: 34,
+              color: Colors.white,
+            ),
           ),
         ),
         const SizedBox(height: 16),
@@ -169,10 +149,10 @@ class _TogetherGuestWaitingStateState extends State<TogetherGuestWaitingState>
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: colorScheme.primary.withValues(alpha: 0.10),
+                color: YumeDesign.surfaceRaised,
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(
-                  color: colorScheme.primary.withValues(alpha: 0.3),
+                  color: Colors.white.withValues(alpha: 0.12),
                 ),
               ),
               child: Row(
@@ -235,10 +215,10 @@ class _TogetherGuestWaitingStateState extends State<TogetherGuestWaitingState>
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: Colors.amber.withValues(alpha: 0.12),
+                color: Colors.white.withValues(alpha: 0.06),
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(
-                  color: Colors.amber.withValues(alpha: 0.45),
+                  color: Colors.white.withValues(alpha: 0.16),
                 ),
               ),
               child: Column(

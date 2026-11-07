@@ -7,6 +7,7 @@ import '../../../core/providers/device_info_provider.dart';
 import '../models.dart';
 import '../together_provider.dart';
 import '../together_service.dart';
+import 'together_connection_status.dart';
 import 'together_start_button.dart';
 import 'together_waiting_state.dart';
 
@@ -201,17 +202,19 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: colorScheme.primary.withValues(alpha: 0.35)),
       ),
-      child: const Row(
+      child: Row(
         children: [
-          SizedBox(
+          const SizedBox(
             width: 18,
             height: 18,
             child: CircularProgressIndicator(strokeWidth: 2),
           ),
-          SizedBox(width: 10),
+          const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Connection dropped — reconnecting to the Together relay… '
+              // Attempt count and last relay tried: the reconnect is
+              // visible work, not a silent spinner.
+              'Connection dropped — ${service.connectionStatusLabel}. '
               'Your room is kept.',
             ),
           ),
@@ -473,6 +476,8 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
             fontSize: 12,
           ),
         ),
+        const SizedBox(height: 10),
+        Center(child: TogetherConnectionStatus(service: service)),
         const SizedBox(height: 6),
         const Text(
           'The Enjoy Together orb is now floating — drag it anywhere, '
@@ -498,6 +503,8 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _otpCard(service, service.otp ?? ''),
+        const SizedBox(height: 16),
+        Center(child: TogetherConnectionStatus(service: service)),
         const SizedBox(height: 20),
         TogetherGuestWaitingState(
           service: service,
@@ -568,6 +575,8 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
                   fontSize: 12,
                 ),
               ),
+              const SizedBox(height: 10),
+              Center(child: TogetherConnectionStatus(service: service)),
               if (!isHost && service.roomState != null) ...[
                 const SizedBox(height: 14),
                 OutlinedButton.icon(

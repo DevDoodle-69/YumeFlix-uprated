@@ -125,13 +125,12 @@ class _SearchScopeSwitcherState extends State<SearchScopeSwitcher> {
               child: Container(
                 margin: const EdgeInsets.all(2),
                 decoration: BoxDecoration(
-                  // 2.6.0: the sliding fill is the accent ramp, not a flat
-                  // primary block.
-                  gradient: YumeDesign.accentGradient,
+                  // 2.7.0: flat muted accent fill — no gradient, no shadow.
+                  color: YumeDesign.accent,
                   borderRadius: BorderRadius.circular(innerRadius),
                   boxShadow: [
                     BoxShadow(
-                      color: theme.colorScheme.primary.withValues(alpha: 0.25),
+                      color: Colors.black.withValues(alpha: 0.25),
                       blurRadius: 5,
                       offset: const Offset(0, 1.5),
                     ),

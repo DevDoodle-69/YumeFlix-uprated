@@ -12,11 +12,20 @@ import '../together_service.dart';
 
 /// The floating "Enjoy Together" orb: the room, always within reach.
 ///
-/// Appears the moment a room is created — while the host is still browsing,
-/// not only once a video is playing — and stays up over home, browse and
-/// (when the coordinator mounts it there) the player, until the room is
-/// left. Glassmorphism (translucent + backdrop blur) with a breathing
-/// pulse and a soft glow, draggable anywhere on screen.
+/// Mounted ONCE, above the router (see `main.dart`), so it is visible the
+/// whole time a room is active — while the host searches, browses, opens
+/// details and picks a title, and in the player — and survives every route
+/// push, including the details / view-all routes that sit outside the app
+/// shell. It appears the moment a room is created and stays up until the
+/// room is left. A minimal monochrome glass pill (translucent + backdrop
+/// blur, hairline border, no halo, no pulse), draggable anywhere on screen.
+/// The only motion is a subtle scale on press.
+///
+/// Start and chat come from the player while one is open: the player hook
+/// registers its `goLive` and the player screen its open-chat action on
+/// the service ([TogetherService.orbStartAction] /
+/// [TogetherService.orbOpenChatAction]), and the orb reads them here. With
+/// no player open, Start falls back to opening the title to start.
 ///
 /// The position is a screen fraction kept in [TogetherService] for the
 /// session and persisted to SharedPreferences, so it survives rotation,
@@ -38,13 +47,15 @@ import '../together_service.dart';
 class FloatingTogetherOrb extends ConsumerStatefulWidget {
   const FloatingTogetherOrb({this.onStart, this.onOpenChat, super.key});
 
-  /// Host going live from the player: `() => _togetherHook!.goLive()`.
-  /// Null while browsing (there is no engine position to go live from),
-  /// where the card offers "Pick a title" instead.
+  /// Host going live from the player. Normally null: the player hook
+  /// registers its `goLive` on the service while a player is open and the
+  /// orb prefers that. A non-null value here overrides it (used by tests
+  /// and by any direct mount).
   final VoidCallback? onStart;
 
-  /// Opening the glass chat panel over the player. Null while browsing,
-  /// where there is no panel to open.
+  /// Opening the glass chat panel over the player. Normally null: the
+  /// player screen registers its open-chat action on the service while a
+  /// player is open and the orb prefers that.
   final VoidCallback? onOpenChat;
 
   @override
@@ -52,20 +63,15 @@ class FloatingTogetherOrb extends ConsumerStatefulWidget {
       _FloatingTogetherOrbState();
 }
 
-class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb>
-    with SingleTickerProviderStateMixin {
+class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
   static const Offset _kDefaultFraction = Offset(0.72, 0.78);
   static const double _kCollapsedWidth = 212;
   static const double _kExpandedWidth = 300;
 
-  late final AnimationController _breathe = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1800),
-  )..repeat(reverse: true);
-
   Offset _fraction = _kDefaultFraction;
   bool _expanded = false;
   bool _dragMoved = false;
+  bool _pressed = false;
 
   @override
   void initState() {
@@ -78,12 +84,6 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb>
         _fraction = service.orbPositionFraction ?? _kDefaultFraction;
       });
     });
-  }
-
-  @override
-  void dispose() {
-    _breathe.dispose();
-    super.dispose();
   }
 
   void _copyOtp(String otp) {
@@ -126,33 +126,18 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb>
         onPanEnd: (_) {
           ref.read(togetherServiceProvider).setOrbPosition(_fraction);
         },
+        onTapDown: (_) => setState(() => _pressed = true),
+        onTapUp: (_) => setState(() => _pressed = false),
+        onTapCancel: () => setState(() => _pressed = false),
         onTap: () {
           if (_dragMoved) return;
           setState(() => _expanded = !_expanded);
         },
-        child: AnimatedBuilder(
-          animation: _breathe,
-          builder: (context, child) {
-            // 1.00–1.04 scale + glow swell: breathing, never a frantic pulse.
-            final t = 0.5 - 0.5 * math.cos(_breathe.value * math.pi);
-            return Transform.scale(
-              scale: 1.0 + 0.03 * t,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(28),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Theme.of(context).colorScheme.primary
-                          .withValues(alpha: 0.28 + 0.18 * t),
-                      blurRadius: 22,
-                      offset: const Offset(0, 6),
-                    ),
-                  ],
-                ),
-                child: child,
-              ),
-            );
-          },
+        // 2.7.0: no breathing pulse, no halo — a subtle press scale only,
+        // over a plain black drop shadow from the glass itself.
+        child: AnimatedScale(
+          scale: _pressed ? 0.97 : 1.0,
+          duration: const Duration(milliseconds: 120),
           child: _expanded
               ? _expandedCard(context, service)
               : _collapsedPill(context, service),
@@ -161,17 +146,24 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb>
     );
   }
 
-  Widget _glass(BuildContext context, Widget child, {double radius = 28}) {
+  Widget _glass(BuildContext context, Widget child, {double radius = 16}) {
     final colorScheme = Theme.of(context).colorScheme;
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
         child: Container(
           decoration: BoxDecoration(
-            color: colorScheme.surface.withValues(alpha: 0.68),
+            color: colorScheme.surface.withValues(alpha: 0.85),
             borderRadius: BorderRadius.circular(radius),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.35),
+                blurRadius: 16,
+                offset: const Offset(0, 6),
+              ),
+            ],
           ),
           child: child,
         ),
@@ -233,12 +225,7 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb>
                   decoration: BoxDecoration(
                     color: colorScheme.primary,
                     shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: colorScheme.primary.withValues(alpha: 0.8),
-                        blurRadius: 6,
-                      ),
-                    ],
+                    border: Border.all(color: Colors.black, width: 1),
                   ),
                 ),
             ],
@@ -256,6 +243,12 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb>
     final isPendingHost =
         isHost && service.phase == TogetherPhase.pendingHost;
     final canStart = isPendingHost && media != null;
+    // Start / chat actions: the player registers them on the service while
+    // it is open; the widget's own callbacks override (tests, direct
+    // mounts). No player open means no engine to go live from, so Start
+    // falls back to opening the title.
+    final onStart = widget.onStart ?? service.orbStartAction;
+    final onOpenChat = widget.onOpenChat ?? service.orbOpenChatAction;
     return _glass(
       context,
       SizedBox(
@@ -314,24 +307,40 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb>
                   fontSize: 12,
                 ),
               ),
+              const SizedBox(height: 4),
+              Text(
+                // Relay + measured latency, straight off the service.
+                service.connectionStatusLabel,
+                style: TextStyle(
+                  color: colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
+              ),
               const SizedBox(height: 12),
               Row(
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: colorScheme.primary.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      'Room $otp',
-                      style: TextStyle(
-                        color: colorScheme.primary,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 2,
+                  // The code chip flexes: on a narrow card (or a wide test
+                  // font) the chip ellipsises instead of pushing the Copy
+                  // button out of the card.
+                  Flexible(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: colorScheme.primary.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        'Room $otp',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: colorScheme.primary,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 2,
+                        ),
                       ),
                     ),
                   ),
@@ -344,13 +353,13 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb>
                 ],
               ),
               const SizedBox(height: 12),
-              if (canStart && widget.onStart != null)
+              if (canStart && onStart != null)
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton.icon(
                     onPressed: () {
                       setState(() => _expanded = false);
-                      widget.onStart!.call();
+                      onStart.call();
                     },
                     icon: const Icon(Icons.play_arrow_rounded),
                     label: const Text('Start together'),
@@ -385,14 +394,14 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb>
                   'Playback starts automatically when the host presses Start.',
                   style: TextStyle(fontSize: 12),
                 ),
-              if (widget.onOpenChat != null) ...[
+              if (onOpenChat != null) ...[
                 const SizedBox(height: 8),
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
                     onPressed: () {
                       setState(() => _expanded = false);
-                      widget.onOpenChat!.call();
+                      onOpenChat.call();
                     },
                     icon: const Icon(Icons.chat_bubble_outline_rounded),
                     label: const Text('Open chat'),
@@ -414,7 +423,7 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb>
           ),
         ),
       ),
-      radius: 20,
+      radius: 16,
     );
   }
 }

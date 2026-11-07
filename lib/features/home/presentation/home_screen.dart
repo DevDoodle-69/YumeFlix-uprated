@@ -19,8 +19,6 @@ import '../../explore/presentation/widgets/media_horizontal_list.dart';
 import '../../explore/presentation/view_all_screen.dart';
 import '../../../shared/widgets/desktop_scroll_wrapper.dart';
 import '../../../shared/widgets/loading_indicator.dart';
-import '../../../shared/widgets/ambient_background.dart';
-import '../../../core/theme/artwork_palette.dart';
 import '../../../core/theme/design_tokens.dart';
 import '../../extensions/providers/extensions_controller.dart';
 import '../../../core/extensions/models/extension_plugin.dart';
@@ -352,16 +350,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               ),
             ),
             Expanded(
-              child: AmbientBackground(
-                accent: ref.watch(artworkAccentProvider),
-                child: _buildBody(
-                  context,
-                  homeDataAsync,
-                  history,
-                  generalSettings.watchHistoryEnabled,
-                  syncedProgressAsync,
-                  isWidescreen: true,
-                ),
+              child: _buildBody(
+                context,
+                homeDataAsync,
+                history,
+                generalSettings.watchHistoryEnabled,
+                syncedProgressAsync,
+                isWidescreen: true,
               ),
             ),
           ],
@@ -500,15 +495,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
         ],
       ),
-      body: AmbientBackground(
-        accent: ref.watch(artworkAccentProvider),
-        child: _buildBody(
-          context,
-          homeDataAsync,
-          history,
-          generalSettings.watchHistoryEnabled,
-          syncedProgressAsync,
-        ),
+      body: _buildBody(
+        context,
+        homeDataAsync,
+        history,
+        generalSettings.watchHistoryEnabled,
+        syncedProgressAsync,
       ),
     );
   }
