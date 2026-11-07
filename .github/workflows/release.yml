@@ -150,12 +150,12 @@ jobs:
           
           # Universal Release
           if [ -f "app-release.apk" ]; then
-            mv "app-release.apk" "../../../../skystream-android-universal-${VERSION}.apk"
+            mv "app-release.apk" "../../../../yumeflix-android-universal-${VERSION}.apk"
           fi
           
           # Universal Debug
           if [ -f "app-debug.apk" ]; then
-            mv "app-debug.apk" "../../../../skystream-android-debug-${VERSION}.apk"
+            mv "app-debug.apk" "../../../../yumeflix-android-debug-${VERSION}.apk"
           fi
           
           # Splits
@@ -164,7 +164,7 @@ jobs:
               # Extract ABI: app-<abi>-release.apk -> <abi>
               abi="${f#app-}"
               abi="${abi%-release.apk}"
-              mv "$f" "../../../../skystream-android-${abi}-${VERSION}.apk"
+              mv "$f" "../../../../yumeflix-android-${abi}-${VERSION}.apk"
             fi
           done
 
