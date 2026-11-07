@@ -3,6 +3,8 @@ import 'package:intl/intl.dart';
 import 'package:yumeflix/l10n/generated/app_localizations.dart';
 
 import '../../../../core/models/tmdb_details.dart';
+import '../../../../shared/widgets/glass_card.dart';
+import '../../../../shared/widgets/section_header.dart';
 
 /// Rich "Movie Details" / "Show Details" block (tagline, status, dates, budget, etc.).
 class TmdbDetailsStatsSection extends StatelessWidget {
@@ -17,8 +19,6 @@ class TmdbDetailsStatsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final textColor = theme.colorScheme.onSurface;
     final tagline = data.tagline;
     final status = data.tmdbStatus;
     final releaseDateFull = data.releaseDateFull;
@@ -30,17 +30,13 @@ class TmdbDetailsStatsSection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          isMovie
+        SectionHeader(
+          title: isMovie
               ? AppLocalizations.of(context)!.movieDetails
               : AppLocalizations.of(context)!.showDetails,
-          style: TextStyle(
-            color: textColor,
-            fontSize: 24,
-            fontWeight: FontWeight.bold,
-          ),
+          isLarge: true,
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 16),
         if (tagline.isNotEmpty) ...[
           _DetailItem(
             AppLocalizations.of(context)!.tagline,
@@ -112,28 +108,34 @@ class _DetailItem extends StatelessWidget {
     final textColor = theme.colorScheme.onSurface;
     final textSecondary = theme.colorScheme.onSurface.withValues(alpha: 0.7);
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: TextStyle(
-            color: textSecondary,
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
+    // 2.6.0: stats live in small glass tiles, not bare text.
+    return GlassCard(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label.toUpperCase(),
+            style: TextStyle(
+              color: textSecondary,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.0,
+            ),
           ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          style: TextStyle(
-            color: textColor,
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-            fontStyle: italic ? FontStyle.italic : FontStyle.normal,
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: TextStyle(
+              color: textColor,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              fontStyle: italic ? FontStyle.italic : FontStyle.normal,
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }

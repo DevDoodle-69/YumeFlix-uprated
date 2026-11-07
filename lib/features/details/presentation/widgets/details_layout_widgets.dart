@@ -22,6 +22,7 @@ import 'download_progress_dialog.dart';
 import 'download_management_dialog.dart';
 import 'episode_card.dart';
 import '../../../../shared/focus/app_focus.dart';
+import '../../../../shared/widgets/glass_card.dart';
 
 import 'package:yumeflix/core/providers/device_info_provider.dart';
 import 'package:yumeflix/core/utils/responsive_breakpoints.dart';
@@ -844,19 +845,8 @@ class DetailsChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Theme.of(context).dividerColor),
-      ),
-      child: Text(
-        label,
-        style: Theme.of(context).textTheme.bodySmall
-            ?.copyWith(fontWeight: FontWeight.w500),
-      ),
-    );
+    // 2.6.0: one chip language.
+    return GlassChip(label: label);
   }
 }
 
@@ -887,61 +877,19 @@ class DetailsProviderChip extends ConsumerWidget {
       if (kDebugMode) debugPrint('DetailsProviderChip.build: $e');
     }
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
-            Theme.of(context).colorScheme.primary.withValues(alpha: 0.05),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
+    // 2.6.0: one chip language.
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        GlassChip.accent(
+          displayName.toUpperCase(),
+          icon: Icons.extension_rounded,
         ),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(
-          color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.3),
-          width: 0.5,
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            Icons.extension_rounded,
-            size: 14,
-            color: Theme.of(context).colorScheme.primary,
-          ),
-          const SizedBox(width: 4),
-          Text(
-            displayName.toUpperCase(),
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.primary,
-              fontSize: 11,
-              fontWeight: FontWeight.w900,
-              letterSpacing: 0.5,
-            ),
-          ),
-          if (isDebug) ...[
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: Colors.redAccent.withValues(alpha: 0.9),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: const Text(
-                'DEBUG',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 8,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ],
+        if (isDebug) ...[
+          const SizedBox(width: 6),
+          GlassChip(label: 'DEBUG', accent: Colors.redAccent, filled: true),
         ],
-      ),
+      ],
     );
   }
 }

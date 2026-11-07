@@ -69,6 +69,44 @@ class TogetherPlayerHook {
       service.phase == TogetherPhase.pendingHost &&
       service.pendingMedia != null;
 
+  /// Same condition as [showStartButton], for the floating orb: the orb's
+  /// Start action goes live from wherever the host is watching, not only
+  /// from the player screen's own button.
+  bool get showOrbStart => showStartButton;
+
+  /// The title the host started, when this phone is a guest in a live room.
+  /// The player screen shows this when the guest has not opened the same
+  /// title yet — a real room fact, never a guess.
+  TogetherMediaIdentity? get hostStartedMedia =>
+      service.role == TogetherRole.guest && service.isLive
+      ? service.roomState?.media
+      : null;
+
+  /// True when this guest is live in a room but the title open in this
+  /// player is NOT the title the host started. The guest is then watching
+  /// the wrong thing: sync must not pretend otherwise — the player shows
+  /// "Host started X — open the same title to join playback" instead.
+  bool get guestNeedsSameTitle {
+    final started = hostStartedMedia;
+    if (started == null) return false;
+    return !_sameTitle(media, started);
+  }
+
+  /// Plain-language hint for [guestNeedsSameTitle], or null when the guest
+  /// is on the right title (or is not a guest in a live room).
+  String? get guestJoinHint {
+    final started = hostStartedMedia;
+    if (started == null || !guestNeedsSameTitle) return null;
+    return 'Host started ${started.title} — open the same title to join playback';
+  }
+
+  /// Same title? TMDB id wins when both sides know it; otherwise the
+  /// normalised title (case / surrounding space ignored).
+  static bool _sameTitle(TogetherMediaIdentity a, TogetherMediaIdentity b) {
+    if (a.tmdbId != null && b.tmdbId != null) return a.tmdbId == b.tmdbId;
+    return a.title.trim().toLowerCase() == b.title.trim().toLowerCase();
+  }
+
   void attach() {
     if (_attached) return;
     _attached = true;

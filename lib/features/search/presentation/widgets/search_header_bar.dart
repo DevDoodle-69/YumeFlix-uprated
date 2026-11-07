@@ -7,6 +7,7 @@ import 'package:yumeflix/l10n/generated/app_localizations.dart';
 import '../search_provider.dart';
 import '../../../../shared/widgets/loading_indicator.dart';
 import '../../../../shared/widgets/cards_wrapper.dart';
+import '../../../../core/theme/design_tokens.dart';
 
 /// The Live TV glyph: three bars of different heights, standing still.
 ///
@@ -124,9 +125,9 @@ class _SearchScopeSwitcherState extends State<SearchScopeSwitcher> {
               child: Container(
                 margin: const EdgeInsets.all(2),
                 decoration: BoxDecoration(
-                  color: theme
-                      .colorScheme
-                      .primary, // Theme primary (Coral in light, Blue in dark)
+                  // 2.6.0: the sliding fill is the accent ramp, not a flat
+                  // primary block.
+                  gradient: YumeDesign.accentGradient,
                   borderRadius: BorderRadius.circular(innerRadius),
                   boxShadow: [
                     BoxShadow(
@@ -364,7 +365,7 @@ class _SearchHeaderBarState extends ConsumerState<SearchHeaderBar> {
               // The radius goes on the shape alone; Material asserts if it
               // is given borderRadius and shape together.
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: YumeDesign.cardRadius,
                 side: BorderSide(
                   color: isDark
                       ? Colors.white.withValues(alpha: 0.12)

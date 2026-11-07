@@ -5,6 +5,7 @@ import 'package:yumeflix/core/utils/responsive_breakpoints.dart';
 import 'package:yumeflix/core/utils/layout_constants.dart';
 import 'package:yumeflix/features/tracking/domain/sync_progress_item.dart';
 import 'package:yumeflix/shared/widgets/desktop_scroll_wrapper.dart';
+import 'package:yumeflix/shared/widgets/section_header.dart';
 
 import 'synced_progress_card.dart';
 
@@ -52,29 +53,7 @@ class _SyncedProgressSectionState extends ConsumerState<SyncedProgressSection> {
             isLarge ? LayoutConstants.dashboardContentPadding : 16,
             12,
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                widget.title,
-                style: TextStyle(
-                  fontSize: isLarge ? 24 : 20,
-                  fontWeight: FontWeight.bold,
-                  color: Theme.of(context).colorScheme.onSurface,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Container(
-                width: isLarge ? 30 : 20,
-                height: 3,
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primary,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ],
-          ),
+          child: SectionHeader(title: widget.title, isLarge: isLarge),
         ),
         SizedBox(
           height: listHeight,

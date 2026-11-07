@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../../shared/widgets/section_header.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
@@ -46,15 +47,8 @@ class _MovieTrailersCarouselState extends State<MovieTrailersCarousel> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (isDesktop) ...[
-          Text(
-            "Trailers & Clips",
-            style: TextStyle(
-              color: widget.textColor,
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 20),
+          const SectionHeader(title: 'Trailers & Clips', isLarge: true),
+          const SizedBox(height: 16),
           SizedBox(
             height: 160,
             child: DesktopScrollWrapper(
@@ -202,7 +196,7 @@ class _MovieTrailersCarouselState extends State<MovieTrailersCarousel> {
         width: 200,
         margin: const EdgeInsets.only(right: 16),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(22),
           child: Stack(
             fit: StackFit.expand,
             children: [
@@ -256,7 +250,7 @@ class _MovieTrailersCarouselState extends State<MovieTrailersCarousel> {
         child: Container(
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(22),
           ),
         ),
       ),

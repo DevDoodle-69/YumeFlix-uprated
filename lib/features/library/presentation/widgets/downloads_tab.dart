@@ -9,6 +9,7 @@ import 'package:yumeflix/core/utils/image_fallbacks.dart';
 
 import '../../../../core/domain/entity/multimedia_item.dart';
 import '../../../../core/services/download_service.dart';
+import '../../../../core/theme/design_tokens.dart';
 import '../../../../core/utils/layout_constants.dart';
 import '../../../details/presentation/playback_launcher.dart';
 import '../downloads_provider.dart';
@@ -196,7 +197,7 @@ class _GroupedDownloadTile extends ConsumerWidget {
       color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.2),
       elevation: 0,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(LayoutConstants.radiusXl),
+        borderRadius: YumeDesign.cardRadius,
         side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.5)),
       ),
       clipBehavior: Clip.antiAlias,
@@ -212,7 +213,7 @@ class _GroupedDownloadTile extends ConsumerWidget {
         title: Row(
           children: [
             ClipRRect(
-              borderRadius: BorderRadius.circular(LayoutConstants.radiusMd),
+              borderRadius: BorderRadius.circular(YumeDesign.radiusControl),
               child: CachedNetworkImage(
                 imageUrl:
                     AppImageFallbacks.poster(
@@ -395,7 +396,7 @@ class _DownloadItemTile extends ConsumerWidget {
           ),
         // Poster
         ClipRRect(
-          borderRadius: BorderRadius.circular(LayoutConstants.radiusMd),
+          borderRadius: BorderRadius.circular(YumeDesign.radiusControl),
           child: CachedNetworkImage(
             imageUrl:
                 AppImageFallbacks.poster(
@@ -503,7 +504,7 @@ class _DownloadItemTile extends ConsumerWidget {
                 LinearProgressIndicator(
                   value: progress,
                   backgroundColor: theme.dividerColor.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(LayoutConstants.radiusSm),
+                  borderRadius: BorderRadius.circular(YumeDesign.radiusChip),
                 ),
                 const SizedBox(height: 4),
                 if (progressData != null && isWorking)
@@ -563,7 +564,7 @@ class _DownloadItemTile extends ConsumerWidget {
       onTap: selectionMode
           ? onSelect
           : (isDone ? () => _playLocalFile(context, ref, l10n) : null),
-      borderRadius: BorderRadius.circular(LayoutConstants.radiusLg),
+      borderRadius: YumeDesign.cardRadius,
       child: content,
     );
 
@@ -575,7 +576,7 @@ class _DownloadItemTile extends ConsumerWidget {
       elevation: 0,
       margin: EdgeInsets.zero,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(LayoutConstants.radiusXl),
+        borderRadius: YumeDesign.cardRadius,
         side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.5)),
       ),
       color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.2),

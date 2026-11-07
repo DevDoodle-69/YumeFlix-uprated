@@ -146,6 +146,7 @@ class DiscordPresenceService extends ChangeNotifier {
     String? posterUrl,
     required String tmdbSearchTitle,
     required String tmdbMediaType,
+    int? tmdbId,
     required Duration position,
     required Duration duration,
     required bool playing,
@@ -160,16 +161,20 @@ class DiscordPresenceService extends ChangeNotifier {
         ? 'tv'
         : 'movie';
     final keyFingerprint = TmdbConfig.apiKey.hashCode.toRadixString(16);
-    final lookupKey = '$mediaType|${searchTitle.toLowerCase()}|$keyFingerprint';
+    final lookupKey =
+        '$mediaType|id:${tmdbId ?? 0}|${searchTitle.toLowerCase()}|$keyFingerprint';
     final lookupChanged = lookupKey != _artworkLookupKey;
     if (lookupChanged) {
       _artworkLookupKey = lookupKey;
       _tmdbPosterUrl = null;
     }
-    // The extension knows the exact artwork for the item it resolved. Prefer
-    // that URL so Discord shows the same cover the viewer sees in YumeFlix;
-    // TMDB is only a fallback for providers that omit artwork.
-    _posterUrl = _extensionPosterUrl ?? _tmdbPosterUrl;
+    // The extension knows the exact artwork for the item it resolved, but
+    // Discord's media proxy does not fetch every host the app itself can
+    // load. A TMDB poster (image.tmdb.org) is the one host the proxy
+    // reliably serves, so it outranks an extension poster from any other
+    // host; the extension URL still wins when it already lives on
+    // image.tmdb.org or when TMDB has nothing for this title.
+    _posterUrl = _effectivePoster();
     _position = position < Duration.zero ? Duration.zero : position;
     _duration = duration < Duration.zero ? Duration.zero : duration;
     _playing = playing;
@@ -180,6 +185,7 @@ class DiscordPresenceService extends ChangeNotifier {
           lookupKey: lookupKey,
           title: searchTitle,
           mediaType: mediaType,
+          tmdbId: tmdbId,
         ),
       );
     }
@@ -190,15 +196,21 @@ class DiscordPresenceService extends ChangeNotifier {
     required String lookupKey,
     required String title,
     required String mediaType,
+    int? tmdbId,
   }) async {
     final poster = await _artworkResolver.resolve(
       title: title,
       mediaType: mediaType,
+      tmdbId: tmdbId,
     );
     if (_artworkLookupKey != lookupKey) return;
 
     _tmdbPosterUrl = normalizePosterUrl(poster);
-    final resolvedPoster = _extensionPosterUrl ?? _tmdbPosterUrl;
+    // Recompute instead of keeping the extension URL unconditionally: a
+    // present-but-unfetchable extension poster used to block the TMDB
+    // fallback forever, because the resolved poster always preferred the
+    // extension URL and this early return then saw no change.
+    final resolvedPoster = _effectivePoster();
     if (_posterUrl == resolvedPoster) return;
     _posterUrl = resolvedPoster;
     _lastSentSignature = null;
@@ -487,8 +499,8 @@ class DiscordPresenceService extends ChangeNotifier {
     };
     // Discord's media proxy only fetches external artwork over https, so
     // only a normalized https poster URL may become the large image.
-    // normalizePosterUrl() also accepts http, which is fine for internal
-    // resolution but must never be sent to Discord as large_image.
+    // normalizePosterUrl() upgrades http to https, so anything it returns
+    // is safe to send as large_image.
     final normalizedPoster = normalizePosterUrl(posterUrl);
     final posterUri = normalizedPoster == null
         ? null
@@ -511,13 +523,82 @@ class DiscordPresenceService extends ChangeNotifier {
     return activity;
   }
 
+  /// The Discord activity title: the clean title, plus `· S{n} E{n}` only
+  /// for a true series/anime episode with real numbering. Movies never get
+  /// a season/episode suffix — plugins file films as one-episode shows, and
+  /// a stale dummy `S1 E1` used to leak onto movie activities — and neither
+  /// do `S0`/`E0` placeholders. The TMDB search title must stay the same
+  /// clean title, so callers pass the bare item title separately.
+  /// Exposed for focused title-rule tests.
+  static String formatWatchingTitle({
+    required String title,
+    required bool isSeries,
+    int? season,
+    int? episode,
+  }) {
+    final clean = title.trim();
+    if (!isSeries) return clean;
+    final s = season ?? 0;
+    final e = episode ?? 0;
+    if (s <= 0 || e <= 0) return clean;
+    return '$clean · S$s E$e';
+  }
+
+  /// Picks the poster Discord is most likely to render: a TMDB poster
+  /// (image.tmdb.org) outranks an extension poster from any other host,
+  /// because Discord's media proxy reliably fetches image.tmdb.org and
+  /// silently drops artwork from hosts it cannot reach. When both live on
+  /// the same host the extension URL wins, so the activity shows the same
+  /// cover the viewer sees in YumeFlix. A rejected extension URL never
+  /// blocks the TMDB fallback, and with neither usable the caller falls
+  /// back to the YumeFlix logo. Exposed for focused fallback-chain tests.
+  @visibleForTesting
+  static String? selectEffectivePoster({
+    String? extensionPosterUrl,
+    String? tmdbPosterUrl,
+  }) {
+    final extension = normalizePosterUrl(extensionPosterUrl);
+    final tmdb = normalizePosterUrl(tmdbPosterUrl);
+    if (extension == null) return tmdb;
+    if (tmdb == null) return extension;
+    return _posterRank(tmdb) < _posterRank(extension) ? tmdb : extension;
+  }
+
+  static int _posterRank(String normalizedUrl) {
+    final host = Uri.tryParse(normalizedUrl)?.host.toLowerCase() ?? '';
+    return host == 'image.tmdb.org' ? 0 : 1;
+  }
+
+  String? _effectivePoster() => selectEffectivePoster(
+    extensionPosterUrl: _extensionPosterUrl,
+    tmdbPosterUrl: _tmdbPosterUrl,
+  );
+
   /// Discord fetches this image from its media proxy, so only absolute public
-  /// HTTP(S) URLs can be used. Local files, private hosts, and extension-local
-  /// resources are deliberately omitted instead of leaking them externally.
+  /// HTTPS URLs can be used. Plain http is upgraded to https, protocol-
+  /// relative URLs gain the https scheme, and a bare TMDB poster_path (a
+  /// single path segment such as `/abc123.jpg`) is expanded to its
+  /// image.tmdb.org URL. Local files, private hosts, data/blob URLs, and
+  /// extension-local resources are deliberately omitted instead of leaking
+  /// them externally — and a rejected extension URL falls through to the
+  /// TMDB lookup rather than sending the logo fallback.
   @visibleForTesting
   static String? normalizePosterUrl(String? rawUrl) {
-    final value = rawUrl?.trim();
+    var value = rawUrl?.trim();
     if (value == null || value.isEmpty || value.length > 4096) return null;
+    // Strip the fragment first so it cannot smuggle a bad scheme or host
+    // past the checks below.
+    final fragmentIndex = value.indexOf('#');
+    if (fragmentIndex >= 0) {
+      value = value.substring(0, fragmentIndex);
+      if (value.isEmpty) return null;
+    }
+    // Bare TMDB poster_path: exactly one path segment. A multi-segment
+    // relative path ('/posters/title.jpg') is not a TMDB path and stays
+    // rejected rather than becoming a bogus image.tmdb.org URL.
+    if (RegExp(r'^/[A-Za-z0-9._-]+$').hasMatch(value)) {
+      return 'https://image.tmdb.org/t/p/w500$value';
+    }
     final candidate = value.startsWith('//') ? 'https:$value' : value;
     final uri = Uri.tryParse(candidate);
     if (uri == null ||
@@ -536,11 +617,9 @@ class DiscordPresenceService extends ChangeNotifier {
     }
     final ip = InternetAddress.tryParse(host);
     if (ip != null && _isPrivateOrLocalAddress(ip)) return null;
-    final normalized = uri.toString();
-    final fragmentIndex = normalized.indexOf('#');
-    return fragmentIndex < 0
-        ? normalized
-        : normalized.substring(0, fragmentIndex);
+    // Discord's media proxy only fetches https, so upgrade plain http.
+    final upgraded = uri.scheme == 'http' ? uri.replace(scheme: 'https') : uri;
+    return upgraded.toString();
   }
 
   static bool _isPrivateOrLocalAddress(InternetAddress address) {

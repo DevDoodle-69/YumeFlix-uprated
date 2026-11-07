@@ -5,9 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:yumeflix/core/domain/entity/multimedia_item.dart';
 import 'package:yumeflix/core/utils/image_fallbacks.dart';
 import 'package:yumeflix/shared/widgets/cards_wrapper.dart';
+import 'package:yumeflix/shared/widgets/glass_card.dart';
+import 'package:yumeflix/shared/widgets/multimedia_card.dart';
+import 'package:yumeflix/shared/widgets/section_header.dart';
+import 'package:yumeflix/core/theme/design_tokens.dart';
 import 'package:yumeflix/shared/widgets/shimmer_placeholder.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:yumeflix/shared/widgets/thumbnail_error_placeholder.dart';
 import 'package:yumeflix/core/utils/responsive_breakpoints.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
@@ -99,67 +102,17 @@ class MetadataBar extends ConsumerWidget {
     );
   }
 
-  Widget _buildInfoText(BuildContext context, String text) {
-    return Text(
-      text,
-      style: TextStyle(
-        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.8),
-        fontSize: 14,
-        fontWeight: FontWeight.bold,
-      ),
-    );
-  }
-
   Widget _buildBorderedInfo(
     BuildContext context,
     String text, {
     Color? color,
     bool isFilled = false,
   }) {
-    final theme = Theme.of(context);
-    final themeColor = color ?? theme.colorScheme.onSurface;
-
+    // 2.6.0: one chip language.
     if (isFilled) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(
-          color: themeColor.withValues(alpha: 0.15),
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(
-            color: themeColor.withValues(alpha: 0.3),
-            width: 0.5,
-          ),
-        ),
-        child: Text(
-          text,
-          style: TextStyle(
-            color: themeColor,
-            fontSize: 11,
-            fontWeight: FontWeight.w900,
-            letterSpacing: 0.5,
-          ),
-        ),
-      );
+      return GlassChip.accent(text, accent: color ?? YumeDesign.violet);
     }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-        border: Border.all(
-          color: theme.colorScheme.onSurface.withValues(alpha: 0.1),
-        ),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: themeColor.withValues(alpha: 0.7),
-          fontSize: 12,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-    );
+    return GlassChip(label: text);
   }
 
   Widget _buildIconInfo(
@@ -168,49 +121,20 @@ class MetadataBar extends ConsumerWidget {
     String text, {
     Color? iconColor,
   }) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(
-          icon,
-          size: 14,
-          color:
-              iconColor ??
-              Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
-        ),
-        const SizedBox(width: 4),
-        _buildInfoText(context, text),
-      ],
-    );
+    // 2.6.0: one chip language. The star is a gold rating chip.
+    if (icon == Icons.star_rounded) {
+      return GlassChip.rating(text);
+    }
+    return GlassChip(label: text, icon: icon);
   }
 
   Widget _buildPlaybackBadge(BuildContext context, String policy) {
-    final color = Theme.of(context).colorScheme.secondary;
-    final label = policy;
-    const icon = Icons.play_circle_outline_rounded;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withValues(alpha: 0.5)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 12, color: color),
-          const SizedBox(width: 4),
-          Text(
-            label,
-            style: TextStyle(
-              color: color,
-              fontSize: 10,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ],
-      ),
+    // 2.6.0: one chip language.
+    return GlassChip(
+      label: policy,
+      icon: Icons.play_circle_outline_rounded,
+      accent: Theme.of(context).colorScheme.secondary,
+      filled: true,
     );
   }
 }
@@ -313,17 +237,8 @@ class _NextAiringWidgetState extends State<NextAiringWidget> {
         ? 'Airing now'
         : _formatCountdown(_remaining);
 
-    return Container(
-      width: double.infinity,
+    return GlassCard(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.primaryContainer
-            .withValues(alpha: 0.3),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.3),
-        ),
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -368,13 +283,9 @@ class CastCarousel extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8.0),
-          child: Text(
-            "Cast",
-            style: Theme.of(context).textTheme.titleLarge
-                ?.copyWith(fontWeight: FontWeight.bold),
-          ),
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 8.0),
+          child: SectionHeader(title: 'Cast'),
         ),
         SizedBox(
           height: 160,
@@ -435,13 +346,9 @@ class TrailersSection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8.0),
-          child: Text(
-            "Trailers & Extras",
-            style: Theme.of(context).textTheme.titleLarge
-                ?.copyWith(fontWeight: FontWeight.bold),
-          ),
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 8.0),
+          child: SectionHeader(title: 'Trailers & Extras'),
         ),
         SizedBox(
           height: 160,
@@ -461,7 +368,7 @@ class TrailersSection extends StatelessWidget {
                 child: Container(
                   width: 240,
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: YumeDesign.cardRadius,
                     color: Theme.of(context).colorScheme.surfaceContainer,
                   ),
                   clipBehavior: Clip.antiAlias,
@@ -485,27 +392,10 @@ class TrailersSection extends StatelessWidget {
                           ),
                         ),
                       ),
-                      Positioned(
+                      const Positioned(
                         bottom: 8,
                         left: 8,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.black87,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: const Text(
-                            "Trailer",
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
+                        child: GlassChip(label: 'Trailer'),
                       ),
                     ],
                   ),
@@ -547,13 +437,9 @@ class RecommendationsCarousel extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8.0),
-          child: Text(
-            "More Like This",
-            style: Theme.of(context).textTheme.titleLarge
-                ?.copyWith(fontWeight: FontWeight.bold),
-          ),
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 8.0),
+          child: SectionHeader(title: 'More Like This'),
         ),
         SizedBox(
           height: listHeight,
@@ -563,44 +449,18 @@ class RecommendationsCarousel extends StatelessWidget {
             separatorBuilder: (_, _) => const SizedBox(width: 12),
             itemBuilder: (context, index) {
               final item = items[index];
-              return CardsWrapper(
+              // 2.6.0: one card language — the hand-rolled poster + label
+              // column is gone; the cinematic card carries title + meta.
+              return MultimediaCard(
+                imageUrl:
+                    AppImageFallbacks.poster(item.posterUrl, label: item.title) ??
+                    '',
+                title: item.title,
+                heroTag: 'rec_${item.url}_$index',
+                width: cardWidth,
+                rating: item.score,
+                year: item.year,
                 onTap: () => onItemTap(item),
-                child: SizedBox(
-                  width: cardWidth,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: CachedNetworkImage(
-                            imageUrl:
-                                AppImageFallbacks.poster(
-                                  item.posterUrl,
-                                  label: item.title,
-                                ) ??
-                                '',
-                            fit: BoxFit.cover,
-                            width: cardWidth,
-                            errorWidget: (_, _, _) =>
-                                ThumbnailErrorPlaceholder(label: item.title),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        item.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: isLarge
-                            ? Theme.of(context).textTheme.bodyMedium
-                                  ?.copyWith(fontWeight: FontWeight.bold)
-                            : Theme.of(context).textTheme.bodySmall
-                                  ?.copyWith(fontWeight: FontWeight.w500),
-                      ),
-                    ],
-                  ),
-                ),
               );
             },
           ),

@@ -205,6 +205,142 @@ class TogetherChatMessage {
       );
 }
 
+/// Live room status, pushed by the host over MQTT.
+///
+/// The host is the only publisher: browsing / picked / playing / paused are
+/// facts about the host's phone, and the guest renders them — never guesses
+/// them. Published NON-retained (see [TogetherRoomStatusMessage]): the room
+/// topic holds exactly one retained message and that slot belongs to the
+/// playback state, so a late guest learns the status from the host's
+/// re-publish (triggered by the guest's presence `joined`) and from the
+/// host's heartbeats, which carry the current status too.
+enum TogetherRoomStatus {
+  /// Host created the room and has not picked a title yet.
+  hostBrowsing,
+
+  /// Host picked a title but has not pressed Start yet.
+  hostPickedTitle,
+
+  /// Host pressed Start and playback is running.
+  hostPlaying,
+
+  /// Host pressed Start and playback is paused.
+  hostPaused;
+
+  /// Wire value: the enum name, e.g. `hostBrowsing`.
+  String get wireValue => name;
+
+  static TogetherRoomStatus? fromWire(String? value) {
+    if (value == null) return null;
+    for (final status in TogetherRoomStatus.values) {
+      if (status.name == value) return status;
+    }
+    return null;
+  }
+
+  /// What the guest's waiting / live screen shows for this status.
+  String get label => switch (this) {
+    TogetherRoomStatus.hostBrowsing => 'Host is still finding a movie…',
+    TogetherRoomStatus.hostPickedTitle => 'Host picked a title',
+    TogetherRoomStatus.hostPlaying => 'Host is playing',
+    TogetherRoomStatus.hostPaused => 'Host paused',
+  };
+}
+
+/// One live room-status push from the host.
+///
+/// Non-retained, sent on every status change, re-sent when a guest joins
+/// (presence `joined`), and repeated inside the host's heartbeats — so a
+/// guest that joins late or loses a packet still learns the status within
+/// one heartbeat (2 s) without ever touching the retained state slot.
+class TogetherRoomStatusMessage {
+  const TogetherRoomStatusMessage({
+    required this.status,
+    this.media,
+    required this.senderId,
+    required this.timestampMs,
+  });
+
+  final TogetherRoomStatus status;
+
+  /// The picked / playing title, when the host has one.
+  final TogetherMediaIdentity? media;
+
+  /// MQTT client id of the host that published this status.
+  final String senderId;
+
+  /// Wall-clock milliseconds when the status was published.
+  final int timestampMs;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'kind': 'status',
+    'status': status.wireValue,
+    if (media != null) 'media': media!.toJson(),
+    'senderId': senderId,
+    'timestampMs': timestampMs,
+  };
+
+  factory TogetherRoomStatusMessage.fromJson(Map<String, dynamic> json) {
+    final status = TogetherRoomStatus.fromWire(json['status'] as String?);
+    if (status == null) {
+      throw const FormatException('unknown Together room status');
+    }
+    return TogetherRoomStatusMessage(
+      status: status,
+      media: json['media'] != null
+          ? TogetherMediaIdentity.fromJson(
+              Map<String, dynamic>.from(json['media'] as Map),
+            )
+          : null,
+      senderId: (json['senderId'] as String?) ?? '',
+      timestampMs: (json['timestampMs'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+/// One presence event: a phone entering or leaving the room.
+///
+/// Published (non-retained) by every member right after subscribing and
+/// again on leaving. The host answers a guest's `joined` with a fresh
+/// status publish, which is how a late guest learns what the host is doing
+/// without a retained status message.
+class TogetherPresenceEvent {
+  const TogetherPresenceEvent({
+    required this.senderId,
+    required this.role,
+    required this.joined,
+    required this.timestampMs,
+  });
+
+  /// MQTT client id of the phone entering / leaving.
+  final String senderId;
+
+  /// `host` or `guest` — the role that phone has in the room.
+  final String role;
+
+  /// True on join, false on leave.
+  final bool joined;
+
+  /// Wall-clock milliseconds when the event was published.
+  final int timestampMs;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'kind': 'presence',
+    'senderId': senderId,
+    'role': role,
+    'joined': joined,
+    'timestampMs': timestampMs,
+  };
+
+  factory TogetherPresenceEvent.fromJson(Map<String, dynamic> json) =>
+      TogetherPresenceEvent(
+        senderId: (json['senderId'] as String?) ?? '',
+        role: (json['role'] as String?) ?? 'guest',
+        joined: json['joined'] as bool? ?? true,
+        timestampMs: (json['timestampMs'] as num?)?.toInt() ?? 0,
+      );
+}
+
 /// The last room this device was in, persisted so the app can offer a
 /// rejoin after the app restarts or the viewer leaves and comes back.
 class TogetherLastRoom {

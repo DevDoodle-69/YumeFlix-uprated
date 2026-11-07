@@ -366,6 +366,8 @@ class _HomeSearchResultsState extends ConsumerState<_HomeSearchResults> {
           imageUrl: AppImageFallbacks.poster(item.posterUrl, label: item.title),
           title: item.title,
           heroTag: uniqueTag,
+          rating: item.score,
+          year: item.year,
           onTap: () =>
               DetailsRoute($extra: DetailsRouteExtra(item: item))
                   .push<void>(context),

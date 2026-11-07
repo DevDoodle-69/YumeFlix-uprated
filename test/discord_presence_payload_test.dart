@@ -90,12 +90,26 @@ void main() {
       );
     });
 
-    test('falls back to the logo for http and non-URL posters', () {
-      for (final posterUrl in [
-        'http://images.example.org/posters/insecure.jpg',
-        'not a url',
-        null,
-      ]) {
+    test('upgrades an http poster to https instead of falling back', () {
+      final activity = DiscordPresenceService.buildActivity(
+        title: 'Example Movie',
+        posterUrl: 'http://images.example.org/posters/insecure.jpg',
+        position: Duration.zero,
+        duration: const Duration(minutes: 90),
+        playing: false,
+      );
+      expect(
+        (activity['assets'] as Map<String, dynamic>)['large_image'],
+        'https://images.example.org/posters/insecure.jpg',
+      );
+      expect(
+        (activity['assets'] as Map<String, dynamic>)['small_image'],
+        DiscordPresenceService.discordLargeImageKey,
+      );
+    });
+
+    test('falls back to the logo for non-URL posters', () {
+      for (final posterUrl in ['not a url', null]) {
         final activity = DiscordPresenceService.buildActivity(
           title: 'Example Movie',
           posterUrl: posterUrl,
@@ -133,6 +147,171 @@ void main() {
         playing: false,
       );
       expect(activity.containsKey('timestamps'), isFalse);
+    });
+  });
+
+  group('normalizePosterUrl', () {
+    test('upgrades http to https', () {
+      expect(
+        DiscordPresenceService.normalizePosterUrl(
+          'http://images.example.org/posters/insecure.jpg',
+        ),
+        'https://images.example.org/posters/insecure.jpg',
+      );
+    });
+
+    test('expands a bare TMDB poster_path to its image.tmdb.org URL', () {
+      expect(
+        DiscordPresenceService.normalizePosterUrl(
+          '/kqjL17yufvn9OVLyXYpvtyrFfak.jpg',
+        ),
+        'https://image.tmdb.org/t/p/w500/kqjL17yufvn9OVLyXYpvtyrFfak.jpg',
+      );
+    });
+
+    test('rejects multi-segment relative paths instead of guessing a host', () {
+      expect(
+        DiscordPresenceService.normalizePosterUrl('/posters/title.jpg'),
+        isNull,
+      );
+    });
+
+    test('rejects data, blob, local and private URLs', () {
+      for (final raw in [
+        'data:image/png;base64,iVBORw0KGgo=',
+        'blob:https://example.org/1234',
+        'file:///storage/poster.jpg',
+        'content://media/poster.jpg',
+        'https://localhost/poster.jpg',
+        'https://192.168.0.5/poster.jpg',
+        'https://10.0.0.2/poster.jpg',
+        'http://127.0.0.1:8080/poster.jpg',
+      ]) {
+        expect(
+          DiscordPresenceService.normalizePosterUrl(raw),
+          isNull,
+          reason: raw,
+        );
+      }
+    });
+  });
+
+  group('Discord activity title', () {
+    test('never appends S/E to a movie, even with a dummy S1 E1 episode', () {
+      expect(
+        DiscordPresenceService.formatWatchingTitle(
+          title: 'Harry Potter and the Deathly Hallows: Part 2',
+          isSeries: false,
+          season: 1,
+          episode: 1,
+        ),
+        'Harry Potter and the Deathly Hallows: Part 2',
+      );
+    });
+
+    test('appends S/E for a true series episode', () {
+      expect(
+        DiscordPresenceService.formatWatchingTitle(
+          title: 'Black Clover',
+          isSeries: true,
+          season: 2,
+          episode: 3,
+        ),
+        'Black Clover · S2 E3',
+      );
+    });
+
+    test('omits S/E for S0/E0 placeholders', () {
+      expect(
+        DiscordPresenceService.formatWatchingTitle(
+          title: 'Example Show',
+          isSeries: true,
+          season: 0,
+          episode: 1,
+        ),
+        'Example Show',
+      );
+      expect(
+        DiscordPresenceService.formatWatchingTitle(
+          title: 'Example Show',
+          isSeries: true,
+          season: 1,
+          episode: 0,
+        ),
+        'Example Show',
+      );
+      expect(
+        DiscordPresenceService.formatWatchingTitle(
+          title: 'Example Show',
+          isSeries: true,
+          season: 0,
+          episode: 0,
+        ),
+        'Example Show',
+      );
+    });
+
+    test('omits S/E when no episode is playing', () {
+      expect(
+        DiscordPresenceService.formatWatchingTitle(
+          title: 'Example Show',
+          isSeries: true,
+        ),
+        'Example Show',
+      );
+    });
+  });
+
+  group('effective poster selection', () {
+    test('a TMDB poster wins over an extension poster from another host', () {
+      expect(
+        DiscordPresenceService.selectEffectivePoster(
+          extensionPosterUrl: 'https://cdn.obscure-example.org/poster.jpg',
+          tmdbPosterUrl: 'https://image.tmdb.org/t/p/w500/tmdb.jpg',
+        ),
+        'https://image.tmdb.org/t/p/w500/tmdb.jpg',
+      );
+    });
+
+    test('an extension poster already on image.tmdb.org is kept', () {
+      expect(
+        DiscordPresenceService.selectEffectivePoster(
+          extensionPosterUrl:
+              'https://image.tmdb.org/t/p/w500/extension.jpg',
+          tmdbPosterUrl: 'https://image.tmdb.org/t/p/w500/tmdb.jpg',
+        ),
+        'https://image.tmdb.org/t/p/w500/extension.jpg',
+      );
+    });
+
+    test('a rejected extension URL falls through to the TMDB poster', () {
+      expect(
+        DiscordPresenceService.selectEffectivePoster(
+          extensionPosterUrl: 'data:image/png;base64,AAAA',
+          tmdbPosterUrl: 'https://image.tmdb.org/t/p/w500/tmdb.jpg',
+        ),
+        'https://image.tmdb.org/t/p/w500/tmdb.jpg',
+      );
+    });
+
+    test('returns the extension poster when TMDB has nothing', () {
+      expect(
+        DiscordPresenceService.selectEffectivePoster(
+          extensionPosterUrl: 'https://cdn.example.org/poster.jpg',
+          tmdbPosterUrl: null,
+        ),
+        'https://cdn.example.org/poster.jpg',
+      );
+    });
+
+    test('returns null when neither poster is usable', () {
+      expect(
+        DiscordPresenceService.selectEffectivePoster(
+          extensionPosterUrl: 'https://192.168.0.5/poster.jpg',
+          tmdbPosterUrl: null,
+        ),
+        isNull,
+      );
     });
   });
 

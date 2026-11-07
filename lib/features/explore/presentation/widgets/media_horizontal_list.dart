@@ -1,6 +1,7 @@
 import 'dart:collection';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/router/app_router.dart';
 
@@ -11,11 +12,13 @@ import '../../../../shared/widgets/cards_wrapper.dart';
 
 import '../../../../core/utils/responsive_breakpoints.dart';
 import '../../../../shared/widgets/multimedia_card.dart';
+import '../../../../shared/widgets/section_header.dart';
+import '../../../settings/presentation/general_settings_provider.dart';
 import '../view_all_screen.dart';
 import '../../../../core/domain/entity/multimedia_item.dart';
 import '../../../../core/utils/image_utils.dart';
 
-class MediaHorizontalList extends StatefulWidget {
+class MediaHorizontalList extends ConsumerStatefulWidget {
   final String title;
   final List<MultimediaItem> mediaList;
   final ViewAllCategory category;
@@ -36,10 +39,11 @@ class MediaHorizontalList extends StatefulWidget {
   });
 
   @override
-  State<MediaHorizontalList> createState() => _MediaHorizontalListState();
+  ConsumerState<MediaHorizontalList> createState() =>
+      _MediaHorizontalListState();
 }
 
-class _MediaHorizontalListState extends State<MediaHorizontalList> {
+class _MediaHorizontalListState extends ConsumerState<MediaHorizontalList> {
   late ScrollController _scrollController;
   bool _isPortrait = true;
 
@@ -144,12 +148,19 @@ class _MediaHorizontalListState extends State<MediaHorizontalList> {
         : (_isPortrait ? 130.0 : 200.0);
 
     final double imageHeight = cardWidth / (_isPortrait ? (2 / 3) : (16 / 9));
-    final double listHeight = imageHeight + 40.0;
+    // 2.6.0: with the title on the card (`inside`) the rail is exactly the
+    // image height; with the title below it keeps the old 40 dp label strip.
+    final titleInside =
+        ref.watch(
+          generalSettingsProvider.select((s) => s.titlePosition),
+        ) ==
+        'inside';
+    final double listHeight = imageHeight + (titleInside ? 0.0 : 40.0);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Header Row
+        // Header — one header language for every rail (SectionHeader).
         Padding(
           padding: EdgeInsets.fromLTRB(
             isDesktop
@@ -161,105 +172,45 @@ class _MediaHorizontalListState extends State<MediaHorizontalList> {
                 : LayoutConstants.spacingMd,
             LayoutConstants.spacingSm,
           ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              // Title with Blue Underline Accent
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      widget.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: isDesktop ? 24 : 20,
-                        fontWeight: FontWeight.bold,
-                        color: Theme.of(context).colorScheme.onSurface,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Container(
-                      width: isDesktop ? 30 : 20, // Accent width
-                      height: 3,
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.primary,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              // Desktop arrow buttons — before the View All chip
-              if (isDesktop) ...[
-                const SizedBox(width: 8),
-                _HeaderArrowButton(
-                  icon: Icons.arrow_back_ios_new,
-                  onTap: () => _scrollBy(-400),
-                ),
-                const SizedBox(width: 4),
-                _HeaderArrowButton(
-                  icon: Icons.arrow_forward_ios,
-                  onTap: () => _scrollBy(400),
-                ),
-              ],
-
-              if (widget.showViewAll)
-                const SizedBox(width: LayoutConstants.spacingXs),
-
-              if (widget.showViewAll)
-                CardsWrapper(
-                  onTap: () {
-                    if (widget.onViewAll != null) {
-                      widget.onViewAll!();
-                      return;
-                    }
-                    ViewAllRoute(
-                      $extra: ViewAllRouteExtra(
-                        title: widget.title,
-                        initialMediaList: widget.mediaList,
-                        category: widget.category,
-                        onTap: widget.onTap,
-                      ),
-                    ).push<void>(context);
-                  },
-                  borderRadius: BorderRadius.circular(20),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: LayoutConstants.spacingSm,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.onSurface
-                          .withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Row(
-                      children: [
-                        Text(
-                          l10n.viewAll,
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.onSurface
-                                .withValues(alpha: 0.7),
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        Icon(
-                          Icons.arrow_forward_ios,
-                          size: 10,
-                          color: Theme.of(context).colorScheme.onSurface
-                              .withValues(alpha: 0.7),
-                        ),
-                      ],
-                    ),
+          child: SectionHeader(
+            title: widget.title,
+            isLarge: isDesktop,
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Desktop arrow buttons — before the View All pill.
+                if (isDesktop) ...[
+                  _HeaderArrowButton(
+                    icon: Icons.arrow_back_ios_new,
+                    onTap: () => _scrollBy(-400),
                   ),
-                ),
-            ],
+                  const SizedBox(width: 4),
+                  _HeaderArrowButton(
+                    icon: Icons.arrow_forward_ios,
+                    onTap: () => _scrollBy(400),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+                if (widget.showViewAll)
+                  SectionHeader.viewAllPill(
+                    label: l10n.viewAll,
+                    onTap: () {
+                      if (widget.onViewAll != null) {
+                        widget.onViewAll!();
+                        return;
+                      }
+                      ViewAllRoute(
+                        $extra: ViewAllRouteExtra(
+                          title: widget.title,
+                          initialMediaList: widget.mediaList,
+                          category: widget.category,
+                          onTap: widget.onTap,
+                        ),
+                      ).push<void>(context);
+                    },
+                  ),
+              ],
+            ),
           ),
         ),
 
@@ -293,24 +244,32 @@ class _MediaHorizontalListState extends State<MediaHorizontalList> {
 
                   return Padding(
                     padding: EdgeInsets.only(right: spacing),
-                    child: MultimediaCard(
-                      imageUrl: imageUrl,
-                      title: itemTitle,
-                      heroTag: uniqueTag,
-                      isPortrait: _isPortrait,
-                      onTap: () {
-                        if (widget.onTap != null) {
-                          widget.onTap!(item);
-                        } else {
-                          TmdbDetailsRoute(
-                            movieId: item.id,
-                            mediaType: item.tmdbMediaType,
-                            heroTag: uniqueTag,
-                            placeholderPoster: imageUrl,
-                            source: item.source,
-                          ).push<void>(context);
-                        }
-                      },
+                    child: StaggeredEntrance(
+                      index: index,
+                      child: MultimediaCard(
+                        imageUrl: imageUrl,
+                        title: itemTitle,
+                        heroTag: uniqueTag,
+                        isPortrait: _isPortrait,
+                        // Real metadata, already on the item — rating chip
+                        // and year • duration line on the card.
+                        rating: item.score,
+                        year: item.year,
+                        durationMinutes: item.duration,
+                        onTap: () {
+                          if (widget.onTap != null) {
+                            widget.onTap!(item);
+                          } else {
+                            TmdbDetailsRoute(
+                              movieId: item.id,
+                              mediaType: item.tmdbMediaType,
+                              heroTag: uniqueTag,
+                              placeholderPoster: imageUrl,
+                              source: item.source,
+                            ).push<void>(context);
+                          }
+                        },
+                      ),
                     ),
                   );
                 },

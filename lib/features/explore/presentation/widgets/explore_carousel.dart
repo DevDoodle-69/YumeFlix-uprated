@@ -10,7 +10,9 @@ import 'package:visibility_detector/visibility_detector.dart';
 
 import '../../../../core/utils/image_utils.dart';
 import '../../../../core/theme/artwork_palette.dart';
+import '../../../../core/theme/design_tokens.dart';
 import '../../../../core/utils/layout_constants.dart';
+import '../../../../shared/widgets/glass_card.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -737,8 +739,10 @@ class _ExploreCarouselState extends ConsumerState<ExploreCarousel>
           alignment: isDesktop ? WrapAlignment.start : WrapAlignment.center,
           crossAxisAlignment: WrapCrossAlignment.center,
           spacing: 8.0,
-          runSpacing: 4.0,
+          runSpacing: 8.0,
           children: [
+            if (movie.score != null)
+              GlassChip.rating(movie.score!.toStringAsFixed(1)),
             if (provider != null && provider.isNotEmpty) ...[
               _buildMiniBadge(
                 context,
@@ -747,6 +751,9 @@ class _ExploreCarouselState extends ConsumerState<ExploreCarousel>
               ),
             ],
             if (type != null) ...[_buildMiniBadge(context, type.toUpperCase())],
+            if (year.isNotEmpty) ...[
+              GlassChip(label: year, icon: Icons.calendar_today_rounded),
+            ],
             if (genres.isNotEmpty) ...[
               Text(
                 genres,
@@ -755,25 +762,6 @@ class _ExploreCarouselState extends ConsumerState<ExploreCarousel>
                 style: theme.textTheme.labelSmall?.copyWith(
                   color: Colors.white.withValues(alpha: 0.7),
                 ),
-              ),
-            ],
-            if (year.isNotEmpty) ...[
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.calendar_today_rounded,
-                    size: 10,
-                    color: Colors.white.withValues(alpha: 0.6),
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    year,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: Colors.white.withValues(alpha: 0.7),
-                    ),
-                  ),
-                ],
               ),
             ],
           ],
@@ -832,28 +820,12 @@ class _ExploreCarouselState extends ConsumerState<ExploreCarousel>
     String label, {
     bool isProvider = false,
   }) {
-    final theme = Theme.of(context);
-    final color = isProvider
-        ? theme.colorScheme.primary
-        : theme.colorScheme.secondary;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: color.withValues(alpha: 0.5), width: 0.5),
-      ),
-      child: Text(
-        label,
-        style: theme.textTheme.labelSmall?.copyWith(
-          color: color,
-          fontSize: 8,
-          fontWeight: FontWeight.w900,
-          letterSpacing: 0.5,
-        ),
-      ),
-    );
+    // 2.6.0: one chip language — the old hand-rolled bordered container is
+    // gone. The provider chip leads in violet; the type chip is neutral glass.
+    if (isProvider) {
+      return GlassChip.accent(label, accent: YumeDesign.violet);
+    }
+    return GlassChip(label: label);
   }
 }
 
@@ -948,7 +920,9 @@ class _ProgressDotState extends State<_ProgressDot>
                         child: Container(
                           width: _activeWidth * widget.fillController.value,
                           height: _height,
-                          color: Colors.white.withValues(alpha: 0.9),
+                          // 2.6.0: the auto-advance fill is the hero violet,
+                          // so the progress reads as part of the accent ramp.
+                          color: YumeDesign.violet,
                         ),
                       );
                     },

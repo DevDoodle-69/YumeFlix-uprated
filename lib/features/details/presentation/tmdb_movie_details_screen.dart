@@ -28,6 +28,8 @@ import 'widgets/episode_picker_sheet.dart';
 import '../../sources/presentation/plugin_sources_sheet.dart';
 import '../../../../shared/widgets/thumbnail_error_placeholder.dart';
 import '../../../../shared/widgets/shimmer_placeholder.dart';
+import '../../../../shared/widgets/glass_card.dart';
+import '../../../../core/theme/design_tokens.dart';
 
 class TmdbMovieDetailsScreen extends ConsumerStatefulWidget {
   final int movieId;
@@ -171,7 +173,7 @@ class _TmdbMovieDetailsScreenState
                       ShimmerPlaceholder.rectangular(
                         height: 200,
                         width: double.infinity,
-                        borderRadius: 12,
+                        borderRadius: 22,
                       ),
                       const SizedBox(height: 24),
                       Row(
@@ -196,7 +198,7 @@ class _TmdbMovieDetailsScreenState
                       ShimmerPlaceholder.rectangular(
                         height: 100,
                         width: double.infinity,
-                        borderRadius: 12,
+                        borderRadius: 22,
                       ),
                     ],
                   ),
@@ -605,11 +607,9 @@ class _TmdbMovieDetailsScreenState
                   isMovie: isMovie,
                   onOpen: () => _openPluginSources(data, isMovie),
                 ),
-                // No spacer here: the card already carries a 16 dp foot inside
-                // its own padding, and the block below brings its own 8. A
-                // third gap stacked all three into ~40 dp, which is why the
-                // space under Nuvio read as bigger than the 16 between the two
-                // cards.
+                // 2.6.0: the metadata lives in one glass info panel
+                // directly under the backdrop, and the watched-progress
+                // bar lives in its own glass panel below it.
                 Consumer(
                   builder: (context, ref, _) {
                     final historyRepo = ref.watch(historyRepositoryProvider);
@@ -620,106 +620,115 @@ class _TmdbMovieDetailsScreenState
                       final progress = (pos / dur).clamp(0.0, 1.0);
                       final theme = Theme.of(context);
                       return Padding(
-                        padding: const EdgeInsets.only(bottom: 24.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Container(
-                              width: double.infinity,
-                              height: 6,
-                              clipBehavior: Clip.antiAlias,
-                              decoration: BoxDecoration(
-                                color: theme.colorScheme.onSurface.withValues(
-                                  alpha: 0.1,
-                                ),
+                        padding: const EdgeInsets.only(bottom: 16.0),
+                        child: GlassCard(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              ClipRRect(
                                 borderRadius: BorderRadius.circular(3),
-                              ),
-                              child: LinearProgressIndicator(
-                                value: progress,
-                                backgroundColor: Colors.transparent,
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                  theme.colorScheme.primary,
+                                child: LinearProgressIndicator(
+                                  value: progress,
+                                  minHeight: 6,
+                                  backgroundColor: theme.colorScheme.onSurface
+                                      .withValues(alpha: 0.1),
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    theme.colorScheme.primary,
+                                  ),
                                 ),
                               ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              l10n.percentWatched((progress * 100).toInt()),
-                              style: TextStyle(
-                                color: theme.colorScheme.primary,
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
+                              const SizedBox(height: 8),
+                              Text(
+                                l10n.percentWatched((progress * 100).toInt()),
+                                style: TextStyle(
+                                  color: theme.colorScheme.primary,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       );
                     }
                     return const SizedBox.shrink();
                   },
                 ),
-                const SizedBox(height: 8),
 
-                // Metadata Row: [TMDB] MOVIE/TV  2026  1H 56M  [PG-13]
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 8,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    _buildTmdbLogo(),
-                    _buildTopBadge(
-                      context,
-                      widget.source == 'anilist'
-                          ? (isMovie ? "MOVIE" : "ANIME")
-                          : (isMovie
-                                ? l10n.movie.toUpperCase()
-                                : l10n.tvShow.toUpperCase()),
-                    ),
-                    _buildIconInfo(context, Icons.calendar_today_rounded, year),
-                    _buildIconInfo(
-                      context,
-                      Icons.star_rounded,
-                      rating,
-                      iconColor: const Color(0xFF01B4E4),
-                    ),
-                    if (runtime > 0)
-                      _buildIconInfo(
-                        context,
-                        Icons.timer_outlined,
-                        durationText,
-                      ),
-                    if (certification.isNotEmpty)
-                      _buildBorderedInfo(context, certification),
-                    if (!isMovie && data.seasons.isNotEmpty)
-                      _buildIconInfo(
-                        context,
-                        Icons.layers_rounded,
-                        l10n.seasonsCount(data.seasons.length),
-                      ),
-                  ],
-                ),
+                const SizedBox(height: LayoutConstants.spacingMd),
 
-                const SizedBox(height: 12),
-
-                // Director / Creator
-                RichText(
-                  text: TextSpan(
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSurface,
-                      fontSize: 15,
-                    ),
+                // Metadata panel: [TMDB] MOVIE/TV  2026  ★ 8.4  1H 56M  [PG-13]
+                GlassCard(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      TextSpan(
-                        text: isMovie
-                            ? "${l10n.director}: "
-                            : "${l10n.creator}: ",
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: Theme.of(context).colorScheme.onSurface
-                              .withValues(alpha: 0.7),
-                        ),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          _buildTmdbLogo(),
+                          _buildTopBadge(
+                            context,
+                            widget.source == 'anilist'
+                                ? (isMovie ? "MOVIE" : "ANIME")
+                                : (isMovie
+                                      ? l10n.movie.toUpperCase()
+                                      : l10n.tvShow.toUpperCase()),
+                          ),
+                          _buildIconInfo(
+                            context,
+                            Icons.calendar_today_rounded,
+                            year,
+                          ),
+                          _buildIconInfo(
+                            context,
+                            Icons.star_rounded,
+                            rating,
+                            iconColor: YumeDesign.amber,
+                          ),
+                          if (runtime > 0)
+                            _buildIconInfo(
+                              context,
+                              Icons.timer_outlined,
+                              durationText,
+                            ),
+                          if (certification.isNotEmpty)
+                            _buildBorderedInfo(context, certification),
+                          if (!isMovie && data.seasons.isNotEmpty)
+                            _buildIconInfo(
+                              context,
+                              Icons.layers_rounded,
+                              l10n.seasonsCount(data.seasons.length),
+                            ),
+                        ],
                       ),
-                      TextSpan(text: director),
+                      if (director.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        RichText(
+                          text: TextSpan(
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.onSurface,
+                              fontSize: 15,
+                            ),
+                            children: [
+                              TextSpan(
+                                text: isMovie
+                                    ? "${l10n.director}: "
+                                    : "${l10n.creator}: ",
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: Theme.of(context).colorScheme.onSurface
+                                      .withValues(alpha: 0.7),
+                                ),
+                              ),
+                              TextSpan(text: director),
+                            ],
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -822,16 +831,31 @@ class _TmdbMovieDetailsScreenState
                 ],
 
                 // Movie Details Table
-                Text(
-                  isMovie
-                      ? l10n.movieDetails.toUpperCase()
-                      : l10n.showDetails.toUpperCase(),
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurface,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.0,
-                  ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      isMovie
+                          ? l10n.movieDetails.toUpperCase()
+                          : l10n.showDetails.toUpperCase(),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurface,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.0,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Container(
+                      width: 28,
+                      height: 3,
+                      decoration: BoxDecoration(
+                        gradient: YumeDesign.accentGradient,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 16),
                 if (tagline.isNotEmpty)
@@ -907,26 +931,8 @@ class _TmdbMovieDetailsScreenState
   }
 
   Widget _buildTopBadge(BuildContext context, String label) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(
-          color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.3),
-          width: 0.5,
-        ),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: Theme.of(context).colorScheme.primary,
-          fontSize: 11,
-          fontWeight: FontWeight.w900,
-          letterSpacing: 0.5,
-        ),
-      ),
-    );
+    // 2.6.0: one chip language.
+    return GlassChip.accent(label);
   }
 
   Widget _buildIconInfo(
@@ -935,50 +941,15 @@ class _TmdbMovieDetailsScreenState
     String text, {
     Color? iconColor,
   }) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(
-          icon,
-          size: 14,
-          color:
-              iconColor ??
-              Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
-        ),
-        const SizedBox(width: 4),
-        Text(
-          text,
-          style: TextStyle(
-            color: Theme.of(context).colorScheme.onSurface
-                .withValues(alpha: 0.8),
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ],
-    );
+    // 2.6.0: one chip language. The star is a gold rating chip.
+    if (icon == Icons.star_rounded) {
+      return GlassChip.rating(text);
+    }
+    return GlassChip(label: text, icon: icon);
   }
 
   Widget _buildBorderedInfo(BuildContext context, String text) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest
-            .withValues(alpha: 0.5),
-        border: Border.all(
-          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.1),
-        ),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-          fontSize: 12,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-    );
+    return GlassChip(label: text);
   }
 
   Widget _buildDetailRow(String label, String value) {

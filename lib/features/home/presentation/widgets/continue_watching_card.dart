@@ -5,6 +5,7 @@ import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:yumeflix/features/library/presentation/history_provider.dart';
 
+import '../../../../core/theme/design_tokens.dart';
 import '../../../../core/domain/entity/multimedia_item.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -310,7 +311,7 @@ class _ContinueWatchingCardState extends ConsumerState<ContinueWatchingCard> {
           ),
         );
       },
-      borderRadius: BorderRadius.circular(LayoutConstants.radiusLg),
+      borderRadius: YumeDesign.cardRadius,
       // Read the focus state out of the wrapper's own node rather than nesting
       // a second Focus inside it: a nested node would add a second D-pad stop
       // to every card in the rail.
@@ -324,7 +325,7 @@ class _ContinueWatchingCardState extends ConsumerState<ContinueWatchingCard> {
         child: SizedBox(
           width: widget.width,
           child: ClipRRect(
-            borderRadius: BorderRadius.circular(LayoutConstants.radiusLg),
+            borderRadius: YumeDesign.cardRadius,
             child: Stack(
               children: [
                 // Banner background

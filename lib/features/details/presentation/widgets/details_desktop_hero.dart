@@ -7,6 +7,8 @@ import '../../../../core/domain/entity/multimedia_item.dart';
 import '../../../../core/utils/image_fallbacks.dart';
 import '../../../../shared/widgets/thumbnail_error_placeholder.dart';
 import '../../../../shared/widgets/expandable_text.dart';
+import '../../../../shared/widgets/glass_card.dart';
+import '../../../../core/theme/design_tokens.dart';
 import 'premium_details_widgets.dart';
 import 'details_layout_widgets.dart';
 import '../../../../core/services/notification_service.dart';
@@ -179,22 +181,33 @@ class DetailsDesktopHero extends ConsumerWidget {
 
                       const SizedBox(height: 16),
 
-                      // Metadata bar (provider badge, type, year, rating, etc.)
-                      MetadataBar(
-                        item: displayItem,
-                        isLoading: detailsState is AsyncLoading,
-                      ),
-
-                      const SizedBox(height: 20),
-
-                      // Synopsis
-                      ExpandableText(
-                        text: displayItem.description ?? l10n.noDescription,
-                        maxLines: 4,
-                        style: TextStyle(
-                          color: textSecondary,
-                          fontSize: 16,
-                          height: 1.5,
+                      // 2.6.0: metadata + synopsis in one glass info panel
+                      // floating over the backdrop.
+                      GlassCard(
+                        borderRadius: YumeDesign.panelRadius,
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Metadata bar (provider badge, type, year, rating, etc.)
+                            MetadataBar(
+                              item: displayItem,
+                              isLoading: detailsState is AsyncLoading,
+                            ),
+                            const SizedBox(height: 16),
+                            // Synopsis
+                            ExpandableText(
+                              text:
+                                  displayItem.description ?? l10n.noDescription,
+                              maxLines: 4,
+                              style: TextStyle(
+                                color: textSecondary,
+                                fontSize: 16,
+                                height: 1.5,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
 

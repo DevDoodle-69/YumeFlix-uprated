@@ -14,6 +14,7 @@ import 'package:yumeflix/shared/widgets/tv_footer.dart';
 import 'package:yumeflix/l10n/generated/app_localizations.dart';
 
 import '../../features/settings/presentation/general_settings_provider.dart';
+import '../../features/together/presentation/floating_together_orb.dart';
 import 'loading_indicator.dart';
 
 /// The shell's television cursor layer.
@@ -395,6 +396,9 @@ class _AppScaffoldState extends ConsumerState<AppScaffold> {
                               bottom: 0,
                               child: TvFooter(),
                             ),
+                          // "Enjoy Together" orb over home/browse (self-hides
+                          // when no room is active, and never shows on TV).
+                          const FloatingTogetherOrb(),
                         ],
                       ),
                     ),
@@ -429,7 +433,12 @@ class _AppScaffoldState extends ConsumerState<AppScaffold> {
                   bottom: mq.viewPadding.bottom + navBarTotalHeight,
                 ),
               ),
-              child: widget.navigationShell,
+              // "Enjoy Together" orb over home/browse (self-hides when no
+              // room is active, and never shows on TV).
+              child: Stack(children: [
+                widget.navigationShell,
+                const FloatingTogetherOrb(),
+              ]),
             ),
             bottomNavigationBar: Padding(
               padding: EdgeInsets.only(

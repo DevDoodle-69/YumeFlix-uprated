@@ -8,6 +8,7 @@ import '../models.dart';
 import '../together_provider.dart';
 import '../together_service.dart';
 import 'together_start_button.dart';
+import 'together_waiting_state.dart';
 
 /// The Together tab: watch the same title on two phones, in sync.
 ///
@@ -131,6 +132,8 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 if (service.error != null) _errorBanner(service, colorScheme),
+                if (service.reconnecting)
+                  _reconnectingBanner(service, colorScheme),
                 if (service.phase == TogetherPhase.idle &&
                     service.lastRoom != null)
                   _rejoinCard(service, colorScheme),
@@ -184,6 +187,34 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
                 ),
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  Widget _reconnectingBanner(TogetherService service, ColorScheme colorScheme) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colorScheme.primary.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: colorScheme.primary.withValues(alpha: 0.35)),
+      ),
+      child: const Row(
+        children: [
+          SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Connection dropped — reconnecting to the Together relay… '
+              'Your room is kept.',
+            ),
+          ),
         ],
       ),
     );
@@ -326,7 +357,8 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
           icon: Icons.group_add_rounded,
           title: 'Create a room',
           subtitle:
-              'Get a 6-digit code, pick something to watch, then press Start.',
+              'Get a 6-digit code — the Enjoy Together orb appears at once, '
+              'while you browse. Pick something to watch, then press Start.',
           buttonLabel: 'Create room',
           onPressed: _busy ? null : () => _run(service.createRoom),
         ),
@@ -425,10 +457,28 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
       children: [
         _otpCard(service, otp),
         const SizedBox(height: 14),
-        const Text(
-          'Now pick something to watch — search for it like normal. '
-          'When the player opens, press the floating Start button to go live.',
+        Text(
+          service.guestPresent
+              ? '✓ Your friend joined — pick something to watch, then '
+                    'press Start.'
+              : 'Waiting for your friend to join with the code…',
           textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 6),
+        Text(
+          service.presenceLabel,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            fontSize: 12,
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'The Enjoy Together orb is now floating — drag it anywhere, '
+          'tap it for the code and Start.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 12),
         ),
         const SizedBox(height: 14),
         FilledButton.icon(
@@ -441,22 +491,23 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
   }
 
   Widget _waitingCard(TogetherService service) {
+    // Live waiting state: the host's real room status over MQTT, a
+    // breathing orb, a waiting clock — and a real timeout / host-left
+    // state instead of a dead spinner.
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _otpCard(service, service.otp ?? ''),
-        const SizedBox(height: 14),
-        const Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-            SizedBox(width: 10),
-            Text('Waiting for the host to start…'),
-          ],
+        const SizedBox(height: 20),
+        TogetherGuestWaitingState(
+          service: service,
+          onRetry: _busy ? () {} : () => _run(service.retry),
+          onLeave: _busy
+              ? () {}
+              : () => _run(() async {
+                    await service.leaveRoom();
+                    return true;
+                  }),
         ),
       ],
     );
@@ -495,6 +546,27 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
                     : 'Watching together — the host controls playback, '
                           'your player follows along.',
                 textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                // Live status, straight off the wire — never a local guess.
+                service.reconnecting
+                    ? 'Reconnecting to the relay…'
+                    : service.roomStatus.label,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                service.presenceLabel,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
               ),
               if (!isHost && service.roomState != null) ...[
                 const SizedBox(height: 14),

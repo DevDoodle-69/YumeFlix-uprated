@@ -27,6 +27,8 @@ import "widgets/details_desktop_hero.dart";
 import "widgets/premium_details_widgets.dart";
 import "../../../shared/widgets/expandable_text.dart";
 import "../../../shared/widgets/loading_indicator.dart";
+import "../../../shared/widgets/section_header.dart";
+import "../../../core/theme/design_tokens.dart";
 
 import 'package:yumeflix/l10n/generated/app_localizations.dart';
 
@@ -299,7 +301,7 @@ class _DetailsScreenState extends ConsumerState<DetailsScreen> {
           shadowColor: Colors.black.withValues(alpha: 0.30),
           color: colors.surfaceContainerHigh,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: YumeDesign.cardRadius,
             side: BorderSide(
               color: colors.outlineVariant.withValues(alpha: 0.45),
             ),
@@ -593,7 +595,7 @@ class _DetailsScreenState extends ConsumerState<DetailsScreen> {
                   Hero(
                     tag: 'poster_${item.url}',
                     child: ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: YumeDesign.cardRadius,
                       child: CachedNetworkImage(
                         imageUrl:
                             AppImageFallbacks.poster(
@@ -661,11 +663,7 @@ class _DetailsScreenState extends ConsumerState<DetailsScreen> {
                 NextAiringWidget(nextAiring: item.nextAiring!),
               ],
               const SizedBox(height: 24),
-              Text(
-                l10n.synopsis,
-                style: Theme.of(context).textTheme.titleLarge
-                    ?.copyWith(fontWeight: FontWeight.w600),
-              ),
+              SectionHeader(title: l10n.synopsis),
               const SizedBox(height: 8),
               ExpandableText(
                 text: item.description ?? l10n.noDescription,

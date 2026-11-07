@@ -285,7 +285,7 @@ class _ProviderSearchSectionState extends ConsumerState<ProviderSearchSection> {
                               color: Theme.of(context).colorScheme.surface,
                               clipBehavior: Clip.antiAlias,
                               shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
+                                borderRadius: BorderRadius.circular(22),
                                 side: BorderSide(
                                   color: Theme.of(context).colorScheme.onSurface
                                       .withValues(alpha: 0.3),

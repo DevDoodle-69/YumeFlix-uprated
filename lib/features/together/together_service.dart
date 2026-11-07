@@ -63,6 +63,19 @@ const int kTogetherMaxChatImageBytes = 120 * 1024;
 const Duration kTogetherHeartbeatInterval = Duration(seconds: 2);
 const Duration kTogetherHostSilenceTimeout = Duration(seconds: 8);
 
+/// How long a waiting guest gives the host to show any sign of life
+/// (status, heartbeat, presence or retained state) after joining before
+/// the waiting screen says so instead of spinning forever. The host
+/// publishes a status the moment the room is created and a heartbeat every
+/// 2 s, so 30 s of total silence genuinely means the relay or the host is
+/// gone — not that the host is browsing slowly.
+const Duration kTogetherWaitingStaleTimeout = Duration(seconds: 30);
+
+/// Reconnect backoff after a mid-room relay drop: 1 s, 2 s, 4 s, 8 s, 15 s.
+/// After the fifth failed attempt the room reports the relay unreachable.
+const List<int> kTogetherReconnectDelaysSeconds = <int>[1, 2, 4, 8, 15];
+const int kTogetherMaxReconnectAttempts = 5;
+
 /// The user-facing message when the relay cannot be reached. Shown verbatim
 /// by the UI — never a silent failure, never a stack trace.
 const String kTogetherRelayUnreachableMessage =
@@ -96,6 +109,8 @@ class TogetherService extends ChangeNotifier {
   Timer? _heartbeatTimer;
   Timer? _hostSilenceTimer;
   Timer? _persistTimer;
+  Timer? _reconnectTimer;
+  Timer? _waitingStaleTimer;
 
   TogetherPhase _phase = TogetherPhase.idle;
   TogetherRole? _role;
@@ -107,6 +122,53 @@ class TogetherService extends ChangeNotifier {
   bool _chatHasUnread = false;
   bool _chatPanelOpen = false;
   bool _disposed = false;
+
+  /// Latest live room status, from the host's own status pushes (or, for a
+  /// guest, from the host's heartbeats / retained state). Starts at
+  /// `hostBrowsing`: a room is born with the host still finding a movie.
+  TogetherRoomStatus _roomStatus = TogetherRoomStatus.hostBrowsing;
+
+  /// Client id of the host, once known (retained state, status, presence
+  /// or heartbeat). Used to recognise the host's `bye` even while the guest
+  /// is still waiting and no retained state has arrived yet.
+  String? _hostClientId;
+
+  /// Who is in the room right now, client id -> role (`host` / `guest`),
+  /// including this phone. Built from presence events plus any traffic
+  /// from the host; a `bye` / presence `left` removes the sender.
+  final Map<String, String> _presentMembers = <String, String>{};
+
+  /// True while a relay drop is being retried in the background. The room
+  /// (and its phase) is kept: a reconnect that lands resumes the same room.
+  bool _reconnecting = false;
+  int _reconnectAttempt = 0;
+
+  /// Set while the connection is being (re)established, so a disconnect
+  /// callback from a client that never connected cannot start a reconnect
+  /// loop of its own.
+  bool _connecting = false;
+
+  /// Set before every intentional disconnect (leave / dispose) so
+  /// [_onDisconnected] knows the drop was asked for.
+  bool _intentionalDisconnect = false;
+
+  /// True once a waiting guest has heard nothing from the host for
+  /// [kTogetherWaitingStaleTimeout] after joining. The waiting screen then
+  /// shows a "no signal from the host" state with Retry / Leave instead of
+  /// spinning forever. Cleared by any host traffic.
+  bool _waitingStale = false;
+
+  /// Wall-clock milliseconds when this guest joined (waiting clock).
+  int? _waitingSinceMs;
+
+  /// Last host status this device published, for change detection: the
+  /// host publishes a status only when it actually changes.
+  TogetherRoomStatus? _lastPublishedStatus;
+
+  /// Floating-orb position as a fraction of the screen (0..1 on each axis),
+  /// so it survives rotation and different screen sizes. Null until loaded
+  /// from SharedPreferences or first dragged.
+  ui.Offset? _orbPositionFraction;
 
   /// Last room this device was in, for the "Rejoin room …?" card.
   TogetherLastRoom? _lastRoom;
@@ -152,6 +214,42 @@ class TogetherService extends ChangeNotifier {
   bool get chatHasUnread => _chatHasUnread;
   TogetherLastRoom? get lastRoom => _lastRoom;
   List<TogetherChatMessage> get messages => List.unmodifiable(_messages);
+
+  /// Latest live room status, pushed by the host. The guest's waiting
+  /// screen renders this — it is a real MQTT fact, never a local guess.
+  TogetherRoomStatus get roomStatus => _roomStatus;
+
+  /// True while a relay drop is being retried in the background.
+  bool get reconnecting => _reconnecting;
+
+  /// True once a waiting guest has heard nothing from the host for
+  /// [kTogetherWaitingStaleTimeout] after joining.
+  bool get waitingStale => _waitingStale;
+
+  /// Wall-clock milliseconds when this guest joined, for the waiting clock.
+  int? get waitingSinceMs => _waitingSinceMs;
+
+  /// True when the host is known to be in the room right now.
+  bool get hostPresent =>
+      _presentMembers.values.contains(TogetherRole.host.name);
+
+  /// True when a guest is known to be in the room right now.
+  bool get guestPresent =>
+      _presentMembers.values.contains(TogetherRole.guest.name);
+
+  /// How many phones are in the room, as far as this phone knows.
+  int get memberCount => _presentMembers.length;
+
+  /// One-line presence summary, e.g. `Host + Guest` or `Host only`.
+  String get presenceLabel {
+    if (hostPresent && guestPresent) return 'Host + Guest in room';
+    if (hostPresent) return 'Host in room';
+    if (guestPresent) return 'Guest in room';
+    return 'Waiting for the other phone…';
+  }
+
+  /// Floating-orb position as a screen fraction, or null until loaded.
+  ui.Offset? get orbPositionFraction => _orbPositionFraction;
 
   /// True once a room exists in any form — creating, waiting or live.
   bool get isSessionActive =>
@@ -235,6 +333,46 @@ class TogetherService extends ChangeNotifier {
     notifyListeners();
   }
 
+  static const String _kOrbXKey = 'together.orb_x';
+  static const String _kOrbYKey = 'together.orb_y';
+
+  /// Loads the persisted floating-orb position (screen fraction). Called
+  /// by the orb widget on first build; a missing or corrupt value leaves
+  /// the default position in place.
+  Future<void> loadOrbPosition() async {
+    try {
+      final prefs = await _prefs();
+      final x = prefs.getDouble(_kOrbXKey);
+      final y = prefs.getDouble(_kOrbYKey);
+      if (x == null || y == null) return;
+      if (x < 0 || x > 1 || y < 0 || y > 1) return;
+      _orbPositionFraction = ui.Offset(x, y);
+      notifyListeners();
+    } catch (_) {
+      // A missing position is a default position, not a failure.
+    }
+  }
+
+  /// Remembers the floating-orb position (screen fraction, 0..1) in memory
+  /// and in SharedPreferences. Called by the orb widget when a drag ends;
+  /// it deliberately does NOT notify — a drag already rebuilds the orb
+  /// itself, and every listener rebuilding per drag frame would be waste.
+  Future<void> setOrbPosition(ui.Offset fraction) async {
+    final clamped = ui.Offset(
+      fraction.dx.clamp(0.0, 1.0),
+      fraction.dy.clamp(0.0, 1.0),
+    );
+    _orbPositionFraction = clamped;
+    try {
+      final prefs = await _prefs();
+      await prefs.setDouble(_kOrbXKey, clamped.dx);
+      await prefs.setDouble(_kOrbYKey, clamped.dy);
+    } catch (_) {
+      // Persistence is a convenience; the in-memory position still holds
+      // for this session.
+    }
+  }
+
   // ---- Creating and joining ----
 
   /// Host: generates a code, opens the relay and waits for a title to be
@@ -256,6 +394,9 @@ class TogetherService extends ChangeNotifier {
     }
     await _persistLastRoom();
     _startHeartbeat();
+    _notePeerPresent(clientId, TogetherRole.host.name);
+    _publishPresence(joined: true);
+    _publishStatusNow();
     return true;
   }
 
@@ -286,6 +427,12 @@ class TogetherService extends ChangeNotifier {
     await _persistLastRoom();
     _startHeartbeat();
     _armHostSilenceTimer();
+    _notePeerPresent(clientId, TogetherRole.guest.name);
+    _publishPresence(joined: true);
+    // The host answers this presence with a fresh status publish, so the
+    // waiting screen learns what the host is doing within a heartbeat.
+    _waitingSinceMs = DateTime.now().millisecondsSinceEpoch;
+    _armWaitingStaleTimer();
     return true;
   }
 
@@ -330,22 +477,37 @@ class TogetherService extends ChangeNotifier {
     }
     await _persistLastRoom();
     _startHeartbeat();
+    _notePeerPresent(clientId, TogetherRole.host.name);
+    _publishPresence(joined: true);
+    _publishStatusNow();
     return true;
   }
 
   /// Retries whatever [createRoom]/[joinRoom] last attempted.
   Future<bool> retry() async {
+    _cancelReconnect();
     if (_lastAction == 'join' && _otp != null) return joinRoom(_otp!);
     return createRoom();
   }
 
   /// Leaves the room. A host says goodbye first (so the guest's controls
   /// unlock and playback carries on locally) and clears the retained room
-  /// state; the last-room snapshot is kept for the rejoin card.
+  /// state; every member publishes a presence `left` so the other phone's
+  /// presence line updates; the last-room snapshot is kept for the rejoin
+  /// card.
   Future<void> leaveRoom() async {
     final wasHost = _role == TogetherRole.host;
     final topic = _otp == null ? null : togetherTopicFor(_otp!);
     if (isConnected && topic != null) {
+      // Presence first: the other phone learns the room lost a member even
+      // if the bye below is lost with it.
+      _publish(topic, <String, dynamic>{
+        'kind': 'presence',
+        'senderId': clientId,
+        'role': _role?.name ?? 'guest',
+        'joined': false,
+        'timestampMs': DateTime.now().millisecondsSinceEpoch,
+      });
       if (wasHost) {
         _publish(topic, <String, dynamic>{
           'kind': 'bye',
@@ -367,9 +529,13 @@ class TogetherService extends ChangeNotifier {
     _heartbeatTimer?.cancel();
     _hostSilenceTimer?.cancel();
     _persistTimer?.cancel();
+    _reconnectTimer?.cancel();
+    _waitingStaleTimer?.cancel();
     _heartbeatTimer = null;
     _hostSilenceTimer = null;
     _persistTimer = null;
+    _reconnectTimer = null;
+    _waitingStaleTimer = null;
     _role = null;
     _otp = null;
     _roomState = null;
@@ -378,6 +544,14 @@ class TogetherService extends ChangeNotifier {
     _hostGone = false;
     _chatHasUnread = false;
     _chatPanelOpen = false;
+    _roomStatus = TogetherRoomStatus.hostBrowsing;
+    _hostClientId = null;
+    _presentMembers.clear();
+    _reconnecting = false;
+    _reconnectAttempt = 0;
+    _waitingStale = false;
+    _waitingSinceMs = null;
+    _lastPublishedStatus = null;
     _messages.clear();
     _peerHeartbeats.clear();
     _sequence = 0;
@@ -404,6 +578,10 @@ class TogetherService extends ChangeNotifier {
     } else if (changed) {
       notifyListeners();
     }
+    // Picking a title is a status change the guest is waiting on: the room
+    // goes from "finding a movie" to "picked a title" right now, not at
+    // the next heartbeat.
+    if (_role == TogetherRole.host) _maybePublishStatus();
     unawaited(_persistLastRoom());
   }
 
@@ -419,6 +597,7 @@ class TogetherService extends ChangeNotifier {
       durationMs: durationMs,
       playing: true,
     );
+    _maybePublishStatus();
     unawaited(_persistLastRoom());
     notifyListeners();
   }
@@ -445,6 +624,9 @@ class TogetherService extends ChangeNotifier {
     if (playingFlipped || positionChanged || (playing && due)) {
       _publishState(force: true);
     }
+    // A play/pause flip is a status change too (playing <-> paused) — the
+    // guest's live line follows it without waiting for a heartbeat.
+    if (playingFlipped) _maybePublishStatus();
   }
 
   void _publishState({
@@ -482,6 +664,101 @@ class TogetherService extends ChangeNotifier {
       'kind': 'state',
       ...state.toJson(),
     }, retain: true);
+  }
+
+  // ---- Room status + presence ----
+
+  /// What the host is doing right now, derived from the phase, the picked
+  /// title and the transport. The single source of truth for the status
+  /// the host publishes — and for the status the guest renders.
+  TogetherRoomStatus _deriveHostStatus() {
+    if (_phase == TogetherPhase.live) {
+      return _lastLocalPlaying
+          ? TogetherRoomStatus.hostPlaying
+          : TogetherRoomStatus.hostPaused;
+    }
+    if (_pendingMedia != null) return TogetherRoomStatus.hostPickedTitle;
+    return TogetherRoomStatus.hostBrowsing;
+  }
+
+  /// Host: publishes the current status (non-retained) when it changed.
+  /// Called on create, on picking a title, on going live and on play/pause
+  /// flips — never on a timer, so the wire stays quiet while nothing
+  /// changes and the guest still learns every change within a heartbeat.
+  void _maybePublishStatus() {
+    if (_role != TogetherRole.host || !isConnected) return;
+    final status = _deriveHostStatus();
+    if (status == _lastPublishedStatus) return;
+    _publishStatus(status);
+  }
+
+  /// Host: publishes [status] right now, whatever was published before.
+  /// Used on create / rejoin, where the guest is waiting on this exact
+  /// message, and when answering a guest's presence `joined`.
+  void _publishStatusNow() {
+    if (_role != TogetherRole.host || !isConnected) return;
+    _publishStatus(_deriveHostStatus());
+  }
+
+  void _publishStatus(TogetherRoomStatus status) {
+    _roomStatus = status;
+    _lastPublishedStatus = status;
+    final media = currentMedia;
+    _publishToRoom(<String, dynamic>{
+      'kind': 'status',
+      'status': status.wireValue,
+      if (media != null) 'media': media.toJson(),
+      'senderId': clientId,
+      'timestampMs': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  /// Records [senderId] as present in [role] and clears the waiting-stale
+  /// flag when the traffic is from the host. Notifies only when a member
+  /// is actually new — heartbeats call this every 2 s and must not
+  /// rebuild the room on every beat.
+  void _notePeerPresent(String senderId, String role) {
+    final isNew = _presentMembers[senderId] != role;
+    _presentMembers[senderId] = role;
+    if (role == TogetherRole.host.name) {
+      _hostClientId = senderId;
+      _clearWaitingStale();
+    }
+    if (isNew) notifyListeners();
+  }
+
+  /// Publishes this phone's presence (`joined: true` on entering the room).
+  /// Non-retained: presence is a moment, not a state a late joiner needs.
+  void _publishPresence({required bool joined}) {
+    final role = _role;
+    if (role == null) return;
+    _publishToRoom(<String, dynamic>{
+      'kind': 'presence',
+      'senderId': clientId,
+      'role': role.name,
+      'joined': joined,
+      'timestampMs': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  void _clearWaitingStale() {
+    if (!_waitingStale) return;
+    _waitingStale = false;
+    notifyListeners();
+  }
+
+  /// Arms the waiting-guest stale timer: 30 s after joining with no sign
+  /// of the host, the waiting screen stops spinning and says so.
+  void _armWaitingStaleTimer() {
+    if (_role != TogetherRole.guest) return;
+    _waitingStaleTimer?.cancel();
+    _waitingStaleTimer = Timer(kTogetherWaitingStaleTimeout, () {
+      if (_disposed || _role != TogetherRole.guest) return;
+      if (_phase != TogetherPhase.waitingGuest) return;
+      if (_waitingStale) return;
+      _waitingStale = true;
+      notifyListeners();
+    });
   }
 
   // ---- Chat ----
@@ -576,41 +853,47 @@ class TogetherService extends ChangeNotifier {
   Future<bool> _connectAndSubscribe() async {
     final otp = _otp;
     if (otp == null) return false;
-    for (final broker in _kBrokers) {
-      final client = MqttServerClient.withPort(broker.host, clientId, broker.port);
-      client.useWebSocket = true;
-      // Secure WebSocket (wss) on the broker's TLS websocket port.
-      client.secure = true;
-      client.websocketProtocols = const <String>['mqtt'];
-      client.keepAlivePeriod = 20;
-      client.logging(on: false);
-      client.onConnected = _onConnected;
-      client.onDisconnected = _onDisconnected;
-      client.connectionMessage = MqttConnectMessage()
-          .withClientIdentifier(clientId)
-          .startClean();
-      try {
-        await client.connect();
-      } catch (_) {
+    _connecting = true;
+    try {
+      for (final broker in _kBrokers) {
+        final client =
+            MqttServerClient.withPort(broker.host, clientId, broker.port);
+        client.useWebSocket = true;
+        // Secure WebSocket (wss) on the broker's TLS websocket port.
+        client.secure = true;
+        client.websocketProtocols = const <String>['mqtt'];
+        client.keepAlivePeriod = 20;
+        client.logging(on: false);
+        client.onConnected = _onConnected;
+        client.onDisconnected = _onDisconnected;
+        client.connectionMessage = MqttConnectMessage()
+            .withClientIdentifier(clientId)
+            .startClean();
         try {
-          client.disconnect();
-        } catch (_) {}
-        continue;
+          await client.connect();
+        } catch (_) {
+          try {
+            client.disconnect();
+          } catch (_) {}
+          continue;
+        }
+        if (client.connectionStatus?.state != MqttConnectionState.connected) {
+          try {
+            client.disconnect();
+          } catch (_) {}
+          continue;
+        }
+        _client = client;
+        final topic = togetherTopicFor(otp);
+        client.subscribe(topic, MqttQos.atLeastOnce);
+        unawaited(_updatesSub?.cancel());
+        _updatesSub = client.updates?.listen(_onMessages);
+        return true;
       }
-      if (client.connectionStatus?.state != MqttConnectionState.connected) {
-        try {
-          client.disconnect();
-        } catch (_) {}
-        continue;
-      }
-      _client = client;
-      final topic = togetherTopicFor(otp);
-      client.subscribe(topic, MqttQos.atLeastOnce);
-      unawaited(_updatesSub?.cancel());
-      _updatesSub = client.updates?.listen(_onMessages);
-      return true;
+      return false;
+    } finally {
+      _connecting = false;
     }
-    return false;
   }
 
   void _onConnected() {
@@ -620,17 +903,86 @@ class TogetherService extends ChangeNotifier {
   void _onDisconnected() {
     if (_disposed) return;
     if (kDebugMode) debugPrint('Together: relay disconnected');
-    if (isSessionActive && _phase != TogetherPhase.error) {
-      // A dropped relay mid-room is the same user-facing fact as a relay
-      // that never answered: say so, keep the room's local state so a
-      // retry can pick it up again.
-      _error = kTogetherRelayUnreachableMessage;
-      _phase = TogetherPhase.error;
-      notifyListeners();
+    // A disconnect from a client that never connected, or one we asked to
+    // disconnect, is not a dropped room.
+    if (_connecting || _intentionalDisconnect) {
+      _intentionalDisconnect = false;
+      return;
     }
+    if (!isSessionActive || _phase == TogetherPhase.error) return;
+    // A dropped relay mid-room is retried in the background with backoff
+    // (1 s, 2 s, 4 s, 8 s, 15 s) instead of failing the room at once: a
+    // brief network blip must not end a watch party. The room's local
+    // state is kept throughout, so a reconnect resumes the same room.
+    // Only when every attempt fails does the room report the relay
+    // unreachable.
+    _scheduleReconnect();
+  }
+
+  /// Starts (or restarts) the reconnect loop after a mid-room relay drop.
+  void _scheduleReconnect() {
+    _reconnectTimer?.cancel();
+    _reconnectAttempt = 0;
+    _reconnecting = true;
+    notifyListeners();
+    _attemptReconnect();
+  }
+
+  void _cancelReconnect() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnecting = false;
+    _reconnectAttempt = 0;
+  }
+
+  void _attemptReconnect() {
+    if (_disposed || !isSessionActive || _intentionalDisconnect) {
+      _reconnecting = false;
+      return;
+    }
+    const delays = kTogetherReconnectDelaysSeconds;
+    final delaySeconds = delays[_reconnectAttempt.clamp(0, delays.length - 1)];
+    _reconnectTimer = Timer(Duration(seconds: delaySeconds), () async {
+      if (_disposed || !isSessionActive) return;
+      final ok = await _connectAndSubscribe();
+      if (ok) {
+        _reconnecting = false;
+        _reconnectAttempt = 0;
+        _error = null;
+        _onReconnected();
+        notifyListeners();
+        return;
+      }
+      _reconnectAttempt += 1;
+      if (_reconnectAttempt >= kTogetherMaxReconnectAttempts) {
+        _reconnecting = false;
+        _phase = TogetherPhase.error;
+        _error = kTogetherRelayUnreachableMessage;
+        notifyListeners();
+        return;
+      }
+      _attemptReconnect();
+    });
+  }
+
+  /// Re-asserts this phone in the room after a reconnect: presence,
+  /// status, and — for a live host — the retained playback state, so a
+  /// peer that kept watching gets the room back instead of a stale one.
+  /// The retained state also re-arrives on subscribe, so a guest that was
+  /// live resyncs to the host's live position automatically.
+  void _onReconnected() {
+    _notePeerPresent(clientId, _role?.name ?? 'guest');
+    _publishPresence(joined: true);
+    if (_role == TogetherRole.host) {
+      _publishStatusNow();
+      if (_phase == TogetherPhase.live) _publishState(force: true);
+    }
+    if (_role == TogetherRole.guest) _armHostSilenceTimer();
   }
 
   void _disconnect() {
+    _cancelReconnect();
+    _intentionalDisconnect = true;
     _updatesSub?.cancel();
     _updatesSub = null;
     final client = _client;
@@ -705,7 +1057,68 @@ class TogetherService extends ChangeNotifier {
         _handleHeartbeat(json);
       case 'bye':
         _handleBye(json);
+      case 'status':
+        _handleStatus(json);
+      case 'presence':
+        _handlePresence(json);
     }
+  }
+
+  /// A live room-status push from the host. The guest renders it directly:
+  /// this is the waiting screen's "Host is still finding a movie…" /
+  /// "Host picked X" line, and the live screen's playing/paused line.
+  void _handleStatus(Map<String, dynamic> json) {
+    TogetherRoomStatusMessage message;
+    try {
+      message = TogetherRoomStatusMessage.fromJson(json);
+    } catch (_) {
+      return;
+    }
+    if (message.senderId.isEmpty) return;
+    _notePeerPresent(message.senderId, TogetherRole.host.name);
+    _roomStatus = message.status;
+    if (message.media != null) {
+      // The host is the source of truth about the title while the guest is
+      // still waiting; once live, the retained state owns the title.
+      if (_phase == TogetherPhase.waitingGuest) {
+        _pendingMedia = message.media;
+      } else {
+        _pendingMedia ??= message.media;
+      }
+    }
+    _armHostSilenceTimer();
+    notifyListeners();
+  }
+
+  /// A presence event from the other phone.
+  void _handlePresence(Map<String, dynamic> json) {
+    TogetherPresenceEvent event;
+    try {
+      event = TogetherPresenceEvent.fromJson(json);
+    } catch (_) {
+      return;
+    }
+    if (event.senderId.isEmpty || event.senderId == clientId) return;
+    if (event.joined) {
+      _notePeerPresent(event.senderId, event.role);
+      // A guest just joined: answer with a fresh status publish so the
+      // guest learns what the host is doing right now instead of waiting
+      // for the next heartbeat or status change.
+      if (_role == TogetherRole.host && event.role == TogetherRole.guest.name) {
+        _publishStatusNow();
+      }
+    } else {
+      _presentMembers.remove(event.senderId);
+      // A host that leaves without a `bye` (crashed app, killed network)
+      // still ends the shared session for the guest.
+      if (event.role == TogetherRole.host.name &&
+          _role == TogetherRole.guest) {
+        _hostGone = true;
+        _hostSilenceTimer?.cancel();
+      }
+    }
+    _armHostSilenceTimer();
+    notifyListeners();
   }
 
   void _handleState(Map<String, dynamic> json) {
@@ -728,6 +1141,12 @@ class TogetherService extends ChangeNotifier {
     final playingFlipped = previous?.playing != state.playing;
     _roomState = state;
     _pendingMedia ??= state.media;
+    _notePeerPresent(state.hostId, TogetherRole.host.name);
+    // The retained state is itself a status fact: a guest that missed the
+    // status push still learns playing/paused from it.
+    _roomStatus = state.playing
+        ? TogetherRoomStatus.hostPlaying
+        : TogetherRoomStatus.hostPaused;
     if (_role == TogetherRole.guest && _phase == TogetherPhase.waitingGuest) {
       _phase = TogetherPhase.live;
     }
@@ -775,6 +1194,11 @@ class TogetherService extends ChangeNotifier {
       positionMs: positionMs,
       receivedAtMs: now,
     );
+    // A heartbeat is presence too: if the guest's `joined` was lost, the
+    // host still learns the guest is in the room within 2 s.
+    if (_role == TogetherRole.host) {
+      _notePeerPresent(senderId, TogetherRole.guest.name);
+    }
     // A rejoining host adopts the room's current position from the first
     // heartbeat that proves someone is further along — then re-asserts
     // host authority at that position.
@@ -782,14 +1206,39 @@ class TogetherService extends ChangeNotifier {
       _adoptRejoinFromHeartbeats();
     }
     // Any traffic from the host proves it is still there.
-    if (_role == TogetherRole.guest) _armHostSilenceTimer();
+    if (_role == TogetherRole.guest) {
+      _notePeerPresent(senderId, TogetherRole.host.name);
+      // The host's heartbeat repeats its current status (and picked title)
+      // so a guest that missed the status push still learns it within 2 s.
+      final status = TogetherRoomStatus.fromWire(json['status'] as String?);
+      if (status != null && status != _roomStatus) {
+        _roomStatus = status;
+        notifyListeners();
+      }
+      if (json['media'] is Map && _phase == TogetherPhase.waitingGuest) {
+        try {
+          _pendingMedia = TogetherMediaIdentity.fromJson(
+            Map<String, dynamic>.from(json['media'] as Map),
+          );
+        } catch (_) {
+          // A malformed media block in a heartbeat is not a room failure.
+        }
+      }
+      _armHostSilenceTimer();
+    }
   }
 
   void _handleBye(Map<String, dynamic> json) {
     final senderId = json['senderId'] as String?;
     // Only the host leaving ends the shared session. A guest leaving
-    // changes nothing for the host.
-    if (senderId == null || senderId != _roomState?.hostId) return;
+    // changes nothing for the host. The host is recognised by the id
+    // learned from state / status / presence — not only by the retained
+    // state, which a still-waiting guest may never have received.
+    if (senderId == null ||
+        (senderId != _hostClientId && senderId != _roomState?.hostId)) {
+      return;
+    }
+    _presentMembers.remove(senderId);
     _hostGone = true;
     _hostSilenceTimer?.cancel();
     notifyListeners();
@@ -842,11 +1291,18 @@ class TogetherService extends ChangeNotifier {
     _persistTimer?.cancel();
     _heartbeatTimer = Timer.periodic(kTogetherHeartbeatInterval, (_) {
       if (!isConnected) return;
+      // The host's heartbeat repeats its current status (and picked title):
+      // it is the backstop that keeps a guest's waiting screen live even
+      // when a status push is lost. A guest heartbeat carries position only.
+      final isHost = _role == TogetherRole.host;
+      final media = isHost ? currentMedia : null;
       _publishToRoom(<String, dynamic>{
         'kind': 'heartbeat',
         'senderId': clientId,
         'positionMs': _lastLocalPositionMs,
         'timestampMs': DateTime.now().millisecondsSinceEpoch,
+        if (isHost) 'status': _deriveHostStatus().wireValue,
+        if (media != null) 'media': media.toJson(),
       });
     });
     // The rejoin snapshot only needs a position every so often, not on
@@ -876,6 +1332,8 @@ class TogetherService extends ChangeNotifier {
     _heartbeatTimer?.cancel();
     _hostSilenceTimer?.cancel();
     _persistTimer?.cancel();
+    _reconnectTimer?.cancel();
+    _waitingStaleTimer?.cancel();
     _disconnect();
     super.dispose();
   }

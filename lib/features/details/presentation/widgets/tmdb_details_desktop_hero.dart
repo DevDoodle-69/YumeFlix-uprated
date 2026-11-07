@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../../../shared/widgets/thumbnail_error_placeholder.dart';
+import '../../../../shared/widgets/glass_card.dart';
+import '../../../../core/theme/design_tokens.dart';
 import '../../../../core/models/tmdb_details.dart';
 import '../../../../core/storage/history_repository.dart';
 import 'provider_search_section.dart';
@@ -228,75 +230,87 @@ class TmdbDetailsDesktopHero extends ConsumerWidget {
                         },
                       ),
                       const SizedBox(height: 12),
-                      Wrap(
-                        spacing: 12,
-                        runSpacing: 8,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          _buildTmdbLogo(),
-                          _buildTopBadge(
-                            context,
-                            source == 'anilist'
-                                ? (isMovie ? "MOVIE" : "ANIME")
-                                : (isMovie ? "MOVIE" : "TV SHOW"),
-                          ),
-                          if (year.isNotEmpty)
-                            _buildIconInfo(
-                              context,
-                              Icons.calendar_today_rounded,
-                              year,
-                              textColor,
+                      // 2.6.0: the metadata + overview live in one glass
+                      // info panel floating over the backdrop.
+                      GlassCard(
+                        borderRadius: YumeDesign.panelRadius,
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                _buildTmdbLogo(),
+                                _buildTopBadge(
+                                  context,
+                                  source == 'anilist'
+                                      ? (isMovie ? "MOVIE" : "ANIME")
+                                      : (isMovie ? "MOVIE" : "TV SHOW"),
+                                ),
+                                if (year.isNotEmpty)
+                                  _buildIconInfo(
+                                    context,
+                                    Icons.calendar_today_rounded,
+                                    year,
+                                    textColor,
+                                  ),
+                                _buildIconInfo(
+                                  context,
+                                  Icons.star_rounded,
+                                  rating,
+                                  const Color(0xFF01B4E4),
+                                ),
+                                if (durationText.isNotEmpty)
+                                  _buildIconInfo(
+                                    context,
+                                    Icons.timer_outlined,
+                                    durationText,
+                                    textColor,
+                                  ),
+                                if (certification.isNotEmpty)
+                                  _buildBorderedInfo(
+                                    context,
+                                    certification,
+                                    textColor,
+                                  ),
+                                if (director != "Unknown")
+                                  _buildIconInfo(
+                                    context,
+                                    isMovie
+                                        ? Icons.movie_creation_outlined
+                                        : Icons.person_outline,
+                                    isMovie
+                                        ? "Director: $director"
+                                        : "Creator: $director",
+                                    textColor,
+                                  ),
+                              ],
                             ),
-                          _buildIconInfo(
-                            context,
-                            Icons.star_rounded,
-                            rating,
-                            const Color(0xFF01B4E4),
-                          ),
-                          if (durationText.isNotEmpty)
-                            _buildIconInfo(
-                              context,
-                              Icons.timer_outlined,
-                              durationText,
-                              textColor,
+                            const SizedBox(height: 16),
+                            Text(
+                              overview,
+                              maxLines: 4,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: textSecondary,
+                                fontSize: 16,
+                                height: 1.5,
+                              ),
                             ),
-                          if (certification.isNotEmpty)
-                            _buildBorderedInfo(
-                              context,
-                              certification,
-                              textColor,
+                            const SizedBox(height: 12),
+                            Text(
+                              genreText,
+                              style: TextStyle(
+                                color: textSecondary.withValues(alpha: 0.5),
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
                             ),
-                          if (director != "Unknown")
-                            _buildIconInfo(
-                              context,
-                              isMovie
-                                  ? Icons.movie_creation_outlined
-                                  : Icons.person_outline,
-                              isMovie
-                                  ? "Director: $director"
-                                  : "Creator: $director",
-                              textColor,
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 20),
-                      Text(
-                        overview,
-                        maxLines: 4,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: textSecondary,
-                          fontSize: 16,
-                          height: 1.5,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        genreText,
-                        style: TextStyle(
-                          color: textSecondary.withValues(alpha: 0.5),
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
+                          ],
                         ),
                       ),
                       const SizedBox(height: kDetailsGroupGap),
@@ -364,26 +378,8 @@ class TmdbDetailsDesktopHero extends ConsumerWidget {
   }
 
   Widget _buildTopBadge(BuildContext context, String label) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(
-          color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.3),
-          width: 0.5,
-        ),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: Theme.of(context).colorScheme.primary,
-          fontSize: 11,
-          fontWeight: FontWeight.w900,
-          letterSpacing: 0.5,
-        ),
-      ),
-    );
+    // 2.6.0: one chip language.
+    return GlassChip.accent(label);
   }
 
   Widget _buildIconInfo(
@@ -392,40 +388,15 @@ class TmdbDetailsDesktopHero extends ConsumerWidget {
     String text,
     Color color,
   ) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 14, color: color.withValues(alpha: 0.5)),
-        const SizedBox(width: 4),
-        Text(
-          text,
-          style: TextStyle(
-            color: color.withValues(alpha: 0.8),
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ],
-    );
+    // 2.6.0: one chip language. The star keeps its TMDB-blue tint; the
+    // rest are neutral glass.
+    if (icon == Icons.star_rounded) {
+      return GlassChip.rating(text);
+    }
+    return GlassChip(label: text, icon: icon);
   }
 
   Widget _buildBorderedInfo(BuildContext context, String text, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest
-            .withValues(alpha: 0.5),
-        border: Border.all(color: color.withValues(alpha: 0.1)),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: color.withValues(alpha: 0.7),
-          fontSize: 12,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-    );
+    return GlassChip(label: text);
   }
 }

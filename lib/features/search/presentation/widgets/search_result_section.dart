@@ -8,6 +8,8 @@ import 'package:yumeflix/core/domain/entity/multimedia_item.dart';
 import 'package:yumeflix/core/router/app_router.dart';
 import 'package:yumeflix/core/utils/image_fallbacks.dart';
 import 'package:yumeflix/shared/widgets/desktop_scroll_wrapper.dart';
+import 'package:yumeflix/shared/widgets/glass_card.dart';
+import 'package:yumeflix/core/theme/design_tokens.dart';
 import 'package:yumeflix/shared/widgets/multimedia_card.dart';
 
 import 'stamp_in_label.dart';
@@ -81,12 +83,12 @@ class _SearchResultSectionState extends ConsumerState<SearchResultSection> {
                         ],
                       ),
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 5),
                     Container(
-                      width: isLarge ? 30 : 20,
+                      width: 28,
                       height: 3,
                       decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.primary,
+                        gradient: YumeDesign.accentGradient,
                         borderRadius: BorderRadius.circular(2),
                       ),
                     ),
@@ -130,6 +132,8 @@ class _SearchResultSectionState extends ConsumerState<SearchResultSection> {
                           ),
                           title: item.title,
                           heroTag: uniqueTag,
+                          rating: item.score,
+                          year: item.year,
                           focusNode: rIndex == 0
                               ? widget.firstCardFocusNode
                               : null,
@@ -165,23 +169,9 @@ class _SearchResultSectionState extends ConsumerState<SearchResultSection> {
 
     if (!isDebug) return const SizedBox.shrink();
 
-    return Padding(
-      padding: const EdgeInsets.only(left: 8.0),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-        decoration: BoxDecoration(
-          color: Colors.red,
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: const Text(
-          'DEBUG',
-          style: TextStyle(
-            fontSize: 10,
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ),
+    return const Padding(
+      padding: EdgeInsets.only(left: 8.0),
+      child: GlassChip(label: 'DEBUG', accent: Colors.redAccent, filled: true),
     );
   }
 }

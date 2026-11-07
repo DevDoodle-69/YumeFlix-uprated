@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:yumeflix/core/theme/design_tokens.dart';
 import 'package:yumeflix/core/utils/layout_constants.dart';
 import 'package:yumeflix/core/extensions/extension_manager.dart';
 import 'package:yumeflix/l10n/generated/app_localizations.dart';
 import 'package:yumeflix/shared/widgets/cards_wrapper.dart';
+import 'package:yumeflix/shared/widgets/glass_card.dart';
 import 'package:yumeflix/features/home/presentation/delegates/home_search_delegate.dart';
 import 'package:yumeflix/features/home/presentation/home_provider.dart';
 import 'package:yumeflix/features/explore/presentation/widgets/hover_border_gradient.dart';
@@ -12,6 +14,8 @@ import 'dart:async';
 
 /// A custom header bar for the widescreen dashboard layout.
 ///
+/// 2.6.0: glass icon buttons, a glass search capsule and the gradient-border
+/// provider chip — one header language shared with [ExploreHeaderBar].
 /// Contains: carousel prev/next arrows, capsule search, provider chip.
 class DashboardHeaderBar extends ConsumerWidget {
   final FocusNode searchFocusNode;
@@ -46,46 +50,24 @@ class DashboardHeaderBar extends ConsumerWidget {
       ),
       child: Row(
         children: [
-          // Carousel prev / next arrows
-          CardsWrapper(
-            scaleFactor: 1.01,
-            onTap: () => onPrevious?.call(),
-            borderRadius: BorderRadius.circular(8),
-            child: Container(
-              width: 32,
-              height: 32,
-              alignment: Alignment.center,
-              child: Icon(
-                Icons.arrow_back_ios_new,
-                size: 14,
-                color: hasCarousel
-                    ? theme.colorScheme.onSurface
-                    : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
-              ),
-            ),
+          // Carousel prev / next arrows — glass icon buttons.
+          GlassIconButton(
+            icon: Icons.arrow_back_ios_new,
+            tooltip: 'Previous',
+            enabled: hasCarousel,
+            onTap: onPrevious,
           ),
-          const SizedBox(width: 4),
-          CardsWrapper(
-            scaleFactor: 1.01,
-            onTap: () => onNext?.call(),
-            borderRadius: BorderRadius.circular(8),
-            child: Container(
-              width: 32,
-              height: 32,
-              alignment: Alignment.center,
-              child: Icon(
-                Icons.arrow_forward_ios,
-                size: 14,
-                color: hasCarousel
-                    ? theme.colorScheme.onSurface
-                    : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
-              ),
-            ),
+          const SizedBox(width: 6),
+          GlassIconButton(
+            icon: Icons.arrow_forward_ios,
+            tooltip: 'Next',
+            enabled: hasCarousel,
+            onTap: onNext,
           ),
 
           const SizedBox(width: 16),
 
-          // Capsule search bar
+          // Capsule search bar — glass.
           Expanded(
             child: CardsWrapper(
               scaleFactor: 1.01,
@@ -100,17 +82,17 @@ class DashboardHeaderBar extends ConsumerWidget {
                   ),
                 );
               },
-              borderRadius: BorderRadius.circular(LayoutConstants.radiusPill),
+              borderRadius: YumeDesign.pillRadius,
               child: Container(
                 height: 38,
                 constraints: const BoxConstraints(maxWidth: 500),
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHighest.withValues(
-                    alpha: 0.5,
-                  ),
-                  borderRadius: BorderRadius.circular(
-                    LayoutConstants.radiusPill,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.08),
+                  borderRadius: YumeDesign.pillRadius,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.12),
+                    width: 1,
                   ),
                 ),
                 child: Row(
@@ -138,27 +120,11 @@ class DashboardHeaderBar extends ConsumerWidget {
 
           const SizedBox(width: 16),
 
-          // Refresh button
-          CardsWrapper(
-            scaleFactor: 1.01,
+          // Refresh button — glass icon button.
+          GlassIconButton(
+            icon: Icons.refresh,
+            tooltip: l10n.retry,
             onTap: () => ref.read(homeDataProvider.notifier).fetch(),
-            borderRadius: BorderRadius.circular(50),
-            child: Container(
-              width: 36,
-              height: 36,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: theme.colorScheme.surfaceContainerHighest.withValues(
-                  alpha: 0.3,
-                ),
-              ),
-              child: Icon(
-                Icons.refresh,
-                color: theme.colorScheme.onSurfaceVariant,
-                size: 18,
-              ),
-            ),
           ),
 
           const SizedBox(width: 12),

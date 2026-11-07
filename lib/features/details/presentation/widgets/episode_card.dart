@@ -229,7 +229,7 @@ class EpisodeCard extends HookConsumerWidget {
         // long-press still cover the whole card.
         focusNode: cardInkFocusNode,
         canRequestFocus: false,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(20),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
           width: width,
@@ -244,7 +244,7 @@ class EpisodeCard extends HookConsumerWidget {
                 : isWatched
                 ? watchedCardColor
                 : normalCardColor,
-            borderRadius: BorderRadius.circular(12.0),
+            borderRadius: BorderRadius.circular(20.0),
             border: Border.all(
               color: showFocus
                   ? AppFocus.ringColor(context)

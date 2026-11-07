@@ -520,7 +520,7 @@ Widget _buildListShimmer(BuildContext context) {
                 : LayoutConstants.spacingSm,
           ),
           itemBuilder: (context, index) {
-            return ShimmerPlaceholder(borderRadius: 12);
+            return ShimmerPlaceholder(borderRadius: 22);
           },
         ),
       ),

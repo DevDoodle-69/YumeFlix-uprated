@@ -195,6 +195,8 @@ class _BookmarksTabState extends ConsumerState<BookmarksTab>
                 '',
             title: item.title,
             heroTag: 'lib_bookmark_${item.url}_$index',
+            rating: item.score,
+            year: item.year,
             onTap: () => _openDetails(item),
           );
         },

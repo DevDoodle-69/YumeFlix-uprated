@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
 import '../../shared/focus/app_focus.dart';
+import 'design_tokens.dart';
 
 class AppTheme {
   /// The bundled application type family.
@@ -33,16 +34,18 @@ class AppTheme {
     });
   }
 
-  // Premium Colors
-  static const Color background = Color(0xFF080B18); // Midnight indigo
-  static const Color surface = Color(0xFF11172A);
-  static const Color surfaceHighlight = Color(0xFF1A2540);
-  static const Color primary = Color(0xFF7C8CFF); // Aurora indigo
-  static const Color primaryVariant = Color(0xFF5367E8); // Deep indigo
-  static const Color secondary = Color(0xFF4FD1C5); // Soft teal
+  // Premium Colors — 2.6.0 "liquid glass over deep space". The canvas is
+  // darker than 2.5.0 so poster artwork and glass panels carry the colour;
+  // the accent is the violet → teal → rose ramp in [YumeDesign].
+  static const Color background = YumeDesign.background;
+  static const Color surface = YumeDesign.surface;
+  static const Color surfaceHighlight = YumeDesign.surfaceRaised;
+  static const Color primary = YumeDesign.violet; // Hero violet
+  static const Color primaryVariant = YumeDesign.violetDeep; // Deep violet
+  static const Color secondary = YumeDesign.teal; // Soft teal
   static const Color error = Color(0xFFEF4444);
-  static const Color onSurface = Color(0xFFE5E7EB);
-  static const Color textSecondary = Color(0xFF9CA3AF);
+  static const Color onSurface = YumeDesign.textPrimary;
+  static const Color textSecondary = YumeDesign.textSecondary;
 
   // Light Theme Colors
   static const Color lightBackground = Color(0xFFF5F1EC); // primary surface
@@ -121,7 +124,7 @@ class AppTheme {
     var colorScheme =
         dynamicScheme ??
         ColorScheme.fromSeed(
-          seedColor: accent ?? const Color(0xFF6F7DFF), // Hero artwork accent
+          seedColor: accent ?? YumeDesign.violet, // Hero artwork accent
           brightness: Brightness.dark,
           surface: const Color(0xFF080B18), // Midnight surface
         );
@@ -157,10 +160,13 @@ class AppTheme {
       brightness: Brightness.dark,
       fontFamily: fontFamily,
       scaffoldBackgroundColor: appBackground,
-      // Dialog Theme (Premium Grey)
+      // Dialog Theme (Premium Grey) — 2.6.0: large glass radius.
       dialogTheme: DialogThemeData(
         backgroundColor: appSurface,
         surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: YumeDesign.panelRadius,
+        ),
         titleTextStyle: const TextStyle(
           fontFamily: fontFamily,
           fontSize: 20,
@@ -169,73 +175,84 @@ class AppTheme {
         ),
       ),
 
-      // Bottom Sheet Theme (Premium Grey)
+      // Bottom Sheet Theme (Premium Grey) — 2.6.0: large glass radius.
       bottomSheetTheme: BottomSheetThemeData(
         backgroundColor: appSurface,
         surfaceTintColor: Colors.transparent,
         modalBackgroundColor: appSurface,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(
+            top: Radius.circular(YumeDesign.radiusPanel),
+          ),
+        ),
       ),
 
-      // Card Theme (Pitch Black for List Items)
+      // Card Theme (Pitch Black for List Items) — 2.6.0: one card radius.
       cardTheme: CardThemeData(
         color: appSurface,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        shape: RoundedRectangleBorder(
+          borderRadius: YumeDesign.cardRadius,
+        ),
       ),
 
       // Material 3 Color Scheme
       colorScheme: colorScheme,
 
-      // Typography
+      // Typography — 2.6.0 type scale (see YumeDesign): tighter display,
+      // bolder section titles, same Outfit family.
       textTheme: ThemeData.dark().textTheme
           .apply(fontFamily: fontFamily)
           .copyWith(
             displayLarge: const TextStyle(
               fontFamily: fontFamily,
-              fontSize: 32,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFFF9FAFB),
+              fontSize: YumeDesign.displaySize,
+              fontWeight: FontWeight.w800,
+              letterSpacing: -0.5,
+              color: YumeDesign.textPrimary,
             ),
             displayMedium: const TextStyle(
               fontFamily: fontFamily,
               fontSize: 28,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFFF9FAFB),
+              fontWeight: FontWeight.w800,
+              letterSpacing: -0.3,
+              color: YumeDesign.textPrimary,
             ),
             displaySmall: const TextStyle(
               fontFamily: fontFamily,
               fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFFF9FAFB),
+              fontWeight: FontWeight.w800,
+              color: YumeDesign.textPrimary,
             ),
             headlineMedium: const TextStyle(
               fontFamily: fontFamily,
-              fontSize: 24,
-              fontWeight: FontWeight.w600,
-              color: Color(0xFFF9FAFB),
+              fontSize: YumeDesign.headlineSize,
+              fontWeight: FontWeight.w700,
+              color: YumeDesign.textPrimary,
             ),
             titleLarge: const TextStyle(
               fontFamily: fontFamily,
-              fontSize: 20,
-              fontWeight: FontWeight.w600,
-              color: Color(0xFFF9FAFB),
+              fontSize: YumeDesign.sectionTitleSize,
+              fontWeight: FontWeight.w700,
+              color: YumeDesign.textPrimary,
             ),
             titleMedium: const TextStyle(
               fontFamily: fontFamily,
-              fontSize: 16,
+              fontSize: YumeDesign.titleSize,
               fontWeight: FontWeight.w600,
-              color: Color(0xFFF9FAFB),
+              color: YumeDesign.textPrimary,
             ),
             bodyLarge: const TextStyle(
               fontFamily: fontFamily,
-              fontSize: 16,
-              color: Color(0xFFE5E7EB),
+              fontSize: YumeDesign.titleSize,
+              color: YumeDesign.textPrimary,
             ),
             bodyMedium: const TextStyle(
               fontFamily: fontFamily,
               fontSize: 14,
-              color: Color(0xFF9CA3AF),
+              color: YumeDesign.textSecondary,
             ),
             // WCAG AA (4.5:1) for 12 sp body text, which is the settings
             // subtitle stating the current value of every setting. The old
@@ -281,25 +298,45 @@ class AppTheme {
       // of Material's default inverse (light) surface.
       snackBarTheme: snackBarThemeFor(colorScheme),
 
-      // Input Decoration
+      // Input Decoration — 2.6.0: 20 dp glass radius.
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: appSurface,
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(20),
           borderSide: BorderSide.none,
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(20),
           borderSide: BorderSide.none,
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(20),
           borderSide: BorderSide(color: colorScheme.primary, width: 2),
         ),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 20,
           vertical: 16,
+        ),
+      ),
+
+      // Chip Theme — 2.6.0: one pill language for filter chips.
+      chipTheme: ChipThemeData(
+        backgroundColor: appSurface,
+        disabledColor: colorScheme.onSurface.withValues(alpha: 0.12),
+        selectedColor: colorScheme.primary.withValues(alpha: 0.22),
+        secondarySelectedColor: colorScheme.primary.withValues(alpha: 0.22),
+        labelStyle: const TextStyle(
+          color: YumeDesign.textPrimary,
+          fontWeight: FontWeight.w600,
+        ),
+        secondaryLabelStyle: TextStyle(color: colorScheme.primary),
+        checkmarkColor: colorScheme.primary,
+        shape: RoundedRectangleBorder(
+          borderRadius: YumeDesign.pillRadius,
+          side: BorderSide(
+            color: colorScheme.onSurface.withValues(alpha: 0.12),
+          ),
         ),
       ),
 
@@ -406,6 +443,9 @@ class AppTheme {
         surfaceTintColor: Colors.transparent,
         elevation: 1,
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        shape: RoundedRectangleBorder(
+          borderRadius: YumeDesign.cardRadius,
+        ),
       ),
 
       // Material 3 Color Scheme
@@ -508,7 +548,7 @@ class AppTheme {
         secondaryLabelStyle: TextStyle(color: colorScheme.primary),
         checkmarkColor: colorScheme.primary,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: YumeDesign.pillRadius,
           side: BorderSide.none,
         ),
       ),

@@ -19,6 +19,9 @@ import '../../explore/presentation/widgets/media_horizontal_list.dart';
 import '../../explore/presentation/view_all_screen.dart';
 import '../../../shared/widgets/desktop_scroll_wrapper.dart';
 import '../../../shared/widgets/loading_indicator.dart';
+import '../../../shared/widgets/ambient_background.dart';
+import '../../../core/theme/artwork_palette.dart';
+import '../../../core/theme/design_tokens.dart';
 import '../../extensions/providers/extensions_controller.dart';
 import '../../../core/extensions/models/extension_plugin.dart';
 
@@ -349,13 +352,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               ),
             ),
             Expanded(
-              child: _buildBody(
-                context,
-                homeDataAsync,
-                history,
-                generalSettings.watchHistoryEnabled,
-                syncedProgressAsync,
-                isWidescreen: true,
+              child: AmbientBackground(
+                accent: ref.watch(artworkAccentProvider),
+                child: _buildBody(
+                  context,
+                  homeDataAsync,
+                  history,
+                  generalSettings.watchHistoryEnabled,
+                  syncedProgressAsync,
+                  isWidescreen: true,
+                ),
               ),
             ),
           ],
@@ -385,7 +391,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         ),
         title: Text(l10n.appTitle),
         actions: [
-          // 1. Search Action Button
+          // 1. Search Action Button — glass circle.
           Padding(
             padding: const EdgeInsets.only(right: LayoutConstants.spacingSm),
             child: CardsWrapper(
@@ -401,10 +407,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 );
               },
               borderRadius: BorderRadius.circular(50),
-              child: CircleAvatar(
-                backgroundColor: Theme.of(context).colorScheme.onSurface
-                    .withValues(alpha: 0.1),
-                radius: 18,
+              child: Container(
+                width: 36,
+                height: 36,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Theme.of(context).colorScheme.onSurface
+                      .withValues(alpha: 0.08),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.14),
+                    width: 1,
+                  ),
+                ),
                 child: Icon(
                   Icons.search,
                   color: Theme.of(context).colorScheme.onSurface,
@@ -431,8 +446,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.onSurface
-                          .withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(50),
+                          .withValues(alpha: 0.08),
+                      borderRadius: YumeDesign.pillRadius,
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.14),
+                        width: 1,
+                      ),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -481,12 +500,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
         ],
       ),
-      body: _buildBody(
-        context,
-        homeDataAsync,
-        history,
-        generalSettings.watchHistoryEnabled,
-        syncedProgressAsync,
+      body: AmbientBackground(
+        accent: ref.watch(artworkAccentProvider),
+        child: _buildBody(
+          context,
+          homeDataAsync,
+          history,
+          generalSettings.watchHistoryEnabled,
+          syncedProgressAsync,
+        ),
       ),
     );
   }
@@ -882,7 +904,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         child: SizedBox(
           height: heroHeight,
           width: double.infinity,
-          child: ShimmerPlaceholder(borderRadius: 18),
+          child: ShimmerPlaceholder(borderRadius: 22),
         ),
       );
     } else {
@@ -949,7 +971,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   ShimmerPlaceholder.rectangular(
                     width: cardWidth,
                     height: imageHeight,
-                    borderRadius: 12,
+                    borderRadius: 22,
                   ),
                 ],
               );

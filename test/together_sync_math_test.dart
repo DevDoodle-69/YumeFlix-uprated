@@ -224,6 +224,104 @@ void main() {
     });
   });
 
+  group('room status messages', () {
+    test('status round-trips with media, and labels are guest-facing', () {
+      expect(
+        TogetherRoomStatus.hostBrowsing.label,
+        'Host is still finding a movie…',
+      );
+      expect(
+        TogetherRoomStatus.hostPickedTitle.label,
+        'Host picked a title',
+      );
+      expect(TogetherRoomStatus.hostPlaying.label, 'Host is playing');
+      expect(TogetherRoomStatus.hostPaused.label, 'Host paused');
+      expect(
+        TogetherRoomStatus.fromWire('hostPickedTitle'),
+        TogetherRoomStatus.hostPickedTitle,
+      );
+      expect(TogetherRoomStatus.fromWire('nope'), isNull);
+      expect(TogetherRoomStatus.fromWire(null), isNull);
+
+      const message = TogetherRoomStatusMessage(
+        status: TogetherRoomStatus.hostPickedTitle,
+        media: TogetherMediaIdentity(
+          title: 'Dune',
+          tmdbType: 'movie',
+          tmdbId: 693134,
+        ),
+        senderId: 'yumeflix-ab12cd34',
+        timestampMs: 1_000_000,
+      );
+      final decoded = TogetherRoomStatusMessage.fromJson(
+        Map<String, dynamic>.from(
+          jsonDecode(jsonEncode(message.toJson())) as Map,
+        ),
+      );
+      expect(decoded.status, TogetherRoomStatus.hostPickedTitle);
+      expect(decoded.media?.title, 'Dune');
+      expect(decoded.media?.tmdbId, 693134);
+      expect(decoded.senderId, 'yumeflix-ab12cd34');
+
+      const bare = TogetherRoomStatusMessage(
+        status: TogetherRoomStatus.hostBrowsing,
+        senderId: 'yumeflix-ab12cd34',
+        timestampMs: 1_000_000,
+      );
+      final decodedBare = TogetherRoomStatusMessage.fromJson(
+        Map<String, dynamic>.from(
+          jsonDecode(jsonEncode(bare.toJson())) as Map,
+        ),
+      );
+      expect(decodedBare.status, TogetherRoomStatus.hostBrowsing);
+      expect(decodedBare.media, isNull);
+    });
+
+    test('an unknown status value throws instead of inventing one', () {
+      expect(
+        () => TogetherRoomStatusMessage.fromJson(<String, dynamic>{
+          'kind': 'status',
+          'status': 'hostDancing',
+          'senderId': 'yumeflix-1',
+          'timestampMs': 1,
+        }),
+        throwsFormatException,
+      );
+    });
+  });
+
+  group('presence events', () {
+    test('join and leave round-trip', () {
+      const joined = TogetherPresenceEvent(
+        senderId: 'yumeflix-99',
+        role: 'guest',
+        joined: true,
+        timestampMs: 1_000_000,
+      );
+      final decodedJoined = TogetherPresenceEvent.fromJson(
+        Map<String, dynamic>.from(
+          jsonDecode(jsonEncode(joined.toJson())) as Map,
+        ),
+      );
+      expect(decodedJoined.senderId, 'yumeflix-99');
+      expect(decodedJoined.role, 'guest');
+      expect(decodedJoined.joined, isTrue);
+
+      const left = TogetherPresenceEvent(
+        senderId: 'yumeflix-99',
+        role: 'guest',
+        joined: false,
+        timestampMs: 1_001_000,
+      );
+      final decodedLeft = TogetherPresenceEvent.fromJson(
+        Map<String, dynamic>.from(
+          jsonDecode(jsonEncode(left.toJson())) as Map,
+        ),
+      );
+      expect(decodedLeft.joined, isFalse);
+    });
+  });
+
   group('room state JSON round-trip', () {
     test('a retained state survives encode/decode intact', () {
       const state = TogetherRoomState(

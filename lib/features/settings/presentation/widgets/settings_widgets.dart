@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../../../../core/theme/design_tokens.dart';
 import '../../../../core/utils/layout_constants.dart';
 import '../../../../shared/focus/app_focus.dart';
+import '../../../../shared/widgets/glass_card.dart';
 
 class SettingsGroup extends StatelessWidget {
   final String title;
@@ -34,12 +36,28 @@ class SettingsGroup extends StatelessWidget {
             horizontal: LayoutConstants.spacingMd,
             vertical: LayoutConstants.spacingSm,
           ),
-          child: Text(
-            title,
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-              fontWeight: FontWeight.bold,
-            ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                title.toUpperCase(),
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  color: Theme.of(context).colorScheme.primary,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: YumeDesign.overlineTracking,
+                ),
+              ),
+              const SizedBox(height: 5),
+              Container(
+                width: 28,
+                height: 3,
+                decoration: BoxDecoration(
+                  gradient: YumeDesign.accentGradient,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ],
           ),
         ),
         Container(
@@ -49,8 +67,10 @@ class SettingsGroup extends StatelessWidget {
           decoration: filled
               ? BoxDecoration(
                   color: Theme.of(context).colorScheme.surface,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Theme.of(context).dividerColor),
+                  borderRadius: YumeDesign.cardRadius,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.10),
+                  ),
                 )
               : null,
           child: Column(children: children),
@@ -124,7 +144,7 @@ class _SettingsTileState extends State<SettingsTile> {
           child: AnimatedContainer(
             duration: AppFocus.duration,
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: YumeDesign.cardRadius,
               // A neutral wash and a neutral ring, and only for whoever is
               // driving the app without a pointer. What was here was a 22 %
               // accent fill and a 2 dp accent border that stayed on screen
@@ -147,7 +167,7 @@ class _SettingsTileState extends State<SettingsTile> {
                   padding: const EdgeInsets.all(LayoutConstants.spacingXs),
                   decoration: BoxDecoration(
                     color: primary.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(12),
                   ),
                   child: Icon(widget.icon, color: primary, size: 20),
                 ),
@@ -162,25 +182,7 @@ class _SettingsTileState extends State<SettingsTile> {
                     ),
                     if (widget.isBeta) ...[
                       const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 4,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.primary
-                              .withValues(alpha: 0.2),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          "BETA",
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.primary,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
+                      GlassChip.accent('BETA'),
                     ],
                   ],
                 ),
@@ -224,7 +226,7 @@ class _SettingsTileState extends State<SettingsTile> {
                     : const Icon(Icons.chevron_right_rounded, size: 20),
                 onTap: widget.onTap,
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: YumeDesign.cardRadius,
                 ),
               ),
             ),

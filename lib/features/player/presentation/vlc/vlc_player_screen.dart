@@ -38,7 +38,7 @@ import '../../../../core/logger/app_logger.dart';
 import '../../../together/together_player_hook.dart';
 import '../../../together/together_provider.dart';
 import '../../../together/presentation/together_chat_panel.dart';
-import '../../../together/presentation/together_start_button.dart';
+import '../../../together/presentation/floating_together_orb.dart';
 import '../../domain/network_buffer.dart';
 import '../../domain/smoothness.dart';
 import '../../domain/track_memory.dart';
@@ -2823,13 +2823,18 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
 
   /// The episode this session is playing: an explicitly passed episode wins,
   /// otherwise match the route's token against the series' own episode list.
+  ///
+  /// Films are never episodes: plugins file a movie as a one-episode show
+  /// (a dummy S1 E1), and an explicitly passed episode or a URL match
+  /// against that list used to leak "S1 E1" onto the movie's Discord
+  /// activity, top-bar title, and subtitle target.
   Episode? get _currentEpisode {
-    if (_episode != null) return _episode;
     final type = widget.item.contentType;
     final isSeries =
         type == MultimediaContentType.series ||
         type == MultimediaContentType.anime;
     if (!isSeries) return null;
+    if (_episode != null) return _episode;
     return widget.item.episodes?.firstWhereOrNull((e) => e.url == _videoUrl);
   }
 
@@ -2848,20 +2853,29 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       widget.item.posterUrl,
       widget.item.bannerUrl,
     ]);
-    final title = episode == null
-        ? widget.item.title
-        : '${widget.item.title} · S${episode.season} E${episode.episode}';
+    // The title is the clean item title; the S/E suffix applies only to a
+    // true series/anime episode with real numbering (see
+    // [DiscordPresenceService.formatWatchingTitle]), and the TMDB search
+    // title is the same clean title so the lookup cannot inherit the
+    // suffix. The TMDB id goes along so the lookup hits /movie/{id} or
+    // /tv/{id} instead of guessing from the title.
+    final isSeries =
+        widget.item.contentType == MultimediaContentType.series ||
+        widget.item.contentType == MultimediaContentType.anime;
+    final title = DiscordPresenceService.formatWatchingTitle(
+      title: widget.item.title,
+      isSeries: isSeries,
+      season: episode?.season,
+      episode: episode?.episode,
+    );
     unawaited(
       DiscordPresenceService.instance.updateWatching(
         title: title,
         state: episode?.name ?? 'Watching',
         posterUrl: extensionPoster,
         tmdbSearchTitle: widget.item.title,
-        tmdbMediaType:
-            widget.item.contentType == MultimediaContentType.series ||
-                widget.item.contentType == MultimediaContentType.anime
-            ? 'tv'
-            : 'movie',
+        tmdbMediaType: isSeries ? 'tv' : 'movie',
+        tmdbId: widget.item.tmdbId,
         position: value.position,
         duration: value.duration,
         playing: value.isPlaying,
@@ -3718,17 +3732,27 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
                   child: IgnorePointer(child: _statusPill(_status)),
                 ),
               // Together overlays, above the chrome and below the ended card:
-              // the host's floating Start button while this title is picked
-              // but not live yet, the guest's "Host controls playback" pill,
+              // the movable glass "Enjoy Together" orb (Start lives on it now,
+              // so the old bottom Start button is gone — one Start, on the
+              // orb), the guest's "Host controls playback" pill, the
+              // wrong-title hint for a guest who opened a different title,
               // and the glass chat panel over the video.
-              if (_togetherHook?.showStartButton ?? false)
+              if (_togetherHook?.isSessionActive ?? false)
+                FloatingTogetherOrb(
+                  onStart: (_togetherHook?.showOrbStart ?? false)
+                      ? () => _togetherHook!.goLive()
+                      : null,
+                  onOpenChat: () {
+                    ref.read(togetherServiceProvider).markChatRead();
+                    setState(() => _togetherChatOpen = true);
+                  },
+                ),
+              if (_togetherHook?.guestNeedsSameTitle ?? false)
                 Align(
-                  alignment: Alignment.bottomCenter,
+                  alignment: Alignment.topCenter,
                   child: Padding(
-                    padding: const EdgeInsets.only(bottom: 96),
-                    child: TogetherStartButton(
-                      onPressed: () => _togetherHook!.goLive(),
-                    ),
+                    padding: const EdgeInsets.only(top: 96),
+                    child: _statusPill(_togetherHook!.guestJoinHint!),
                   ),
                 ),
               if (_togetherHook?.guestControlsLocked ?? false)

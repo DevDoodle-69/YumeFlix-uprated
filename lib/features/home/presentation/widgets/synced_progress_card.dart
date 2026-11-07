@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:yumeflix/features/tracking/domain/sync_progress_item.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:yumeflix/core/domain/entity/multimedia_item.dart';
+import 'package:yumeflix/core/theme/design_tokens.dart';
 import 'package:yumeflix/shared/widgets/cards_wrapper.dart';
+import 'package:yumeflix/shared/widgets/glass_card.dart';
 import 'package:yumeflix/shared/widgets/thumbnail_error_placeholder.dart';
 import 'package:yumeflix/core/utils/image_fallbacks.dart';
 
@@ -78,26 +80,24 @@ class SyncedProgressCard extends ConsumerWidget {
           ),
         );
       },
-      borderRadius: BorderRadius.circular(12),
-      child: Stack(
-        children: [
-          Container(
-            width: width,
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surfaceContainer,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: Theme.of(context).dividerColor.withValues(alpha: 0.5),
-              ),
-            ),
-            child: Row(
-              children: [
-                AspectRatio(
-                  aspectRatio: 2 / 3,
-                  child: ClipRRect(
-                    borderRadius: const BorderRadius.horizontal(
-                      left: Radius.circular(12),
-                    ),
+      borderRadius: YumeDesign.cardRadius,
+      child: Container(
+        width: width,
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainer,
+          borderRadius: YumeDesign.cardRadius,
+          border: Border.all(
+            color: Theme.of(context).dividerColor.withValues(alpha: 0.5),
+          ),
+        ),
+        child: Row(
+          children: [
+            AspectRatio(
+              aspectRatio: 2 / 3,
+              child: ClipRRect(
+                borderRadius: const BorderRadius.horizontal(
+                  left: Radius.circular(YumeDesign.radiusCard),
+                ),
                     child: CachedNetworkImage(
                       imageUrl:
                           AppImageFallbacks.tmdbPoster(
@@ -132,67 +132,15 @@ class SyncedProgressCard extends ConsumerWidget {
                         ),
                         const SizedBox(height: 4),
                         Wrap(
-                          spacing: 0,
+                          spacing: 8,
                           runSpacing: 4,
                           children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 6,
-                                vertical: 2,
-                              ),
-                              margin: const EdgeInsets.only(right: 8),
-                              decoration: BoxDecoration(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .primaryContainer,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    Icons.cloud_sync,
-                                    size: 10,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onPrimaryContainer,
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    "SYNCED",
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .onPrimaryContainer,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                ],
-                              ),
+                            GlassChip.accent(
+                              'SYNCED',
+                              icon: Icons.cloud_sync,
+                              accent: Theme.of(context).colorScheme.primary,
                             ),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 6,
-                                vertical: 2,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .surfaceContainerHighest,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                item.type.name.toUpperCase(),
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ),
+                            GlassChip(label: item.type.name.toUpperCase()),
                           ],
                         ),
                         const Spacer(),
@@ -245,48 +193,7 @@ class SyncedProgressCard extends ConsumerWidget {
                 ),
               ],
             ),
-          ),
-          if (item.id != null)
-            Positioned(
-              top: 4,
-              right: 4,
-              child: Material(
-                color: Colors.black.withValues(alpha: 0.6),
-                borderRadius: BorderRadius.circular(12),
-                // ExcludeFocus rather than a FocusNode built inline: a node
-                // created in build() is a new listenable every rebuild that
-                // nothing ever disposes. The intent - keep this tap target
-                // out of D-pad traversal - needs no node at all.
-                child: ExcludeFocus(
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () async {
-                      final manager = ref.read(syncManagerProvider);
-                      final success = await manager.removePlaybackProgress(
-                        item,
-                      );
-                      if (success && context.mounted) {
-                        ref.invalidate(syncedProgressProvider);
-                        ref
-                            .read(notificationServiceProvider)
-                            .showSuccess(
-                              AppLocalizations.of(context)!
-                                  .removedFromHistory(item.title),
-                              title: 'Watch Progress',
-                              icon: Icons.history_rounded,
-                            );
-                      }
-                    },
-                    child: const Padding(
-                      padding: EdgeInsets.all(4),
-                      child: Icon(Icons.close, size: 16, color: Colors.white70),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
+        ),
     );
   }
 }

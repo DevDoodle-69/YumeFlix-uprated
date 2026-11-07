@@ -497,7 +497,7 @@ class _SearchResultsGridState extends ConsumerState<_SearchResultsGrid> {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(child: ShimmerPlaceholder(borderRadius: 12)),
+              Expanded(child: ShimmerPlaceholder(borderRadius: 22)),
               const SizedBox(height: 8),
               ShimmerPlaceholder.rectangular(height: 14, borderRadius: 4),
             ],
@@ -528,7 +528,7 @@ class _SearchResultsGridState extends ConsumerState<_SearchResultsGrid> {
       itemCount: results.length + (isLoading ? 1 : 0),
       itemBuilder: (context, index) {
         if (index >= results.length) {
-          return ShimmerPlaceholder(borderRadius: 12);
+          return ShimmerPlaceholder(borderRadius: 22);
         }
 
         final item = results[index];
@@ -542,6 +542,8 @@ class _SearchResultsGridState extends ConsumerState<_SearchResultsGrid> {
           imageUrl: imageUrl,
           title: title,
           heroTag: uniqueTag,
+          rating: item.score,
+          year: item.year,
           onTap: () {
             _navigateToItem(
               context,

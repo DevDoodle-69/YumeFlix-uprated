@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../../shared/widgets/section_header.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_svg/flutter_svg.dart';
@@ -127,7 +128,7 @@ class _MovieSeasonsListState extends ConsumerState<MovieSeasonsList> {
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.surfaceContainer,
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(12),
                       border: isFocused
                           ? Border.all(
                               color: Theme.of(context).colorScheme.primary,
@@ -202,15 +203,8 @@ class _MovieSeasonsListState extends ConsumerState<MovieSeasonsList> {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            AppLocalizations.of(context)!.seasons,
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.onSurface,
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 16),
+          SectionHeader(title: AppLocalizations.of(context)!.seasons),
+          const SizedBox(height: 12),
           SizedBox(
             height: 180,
             child: ListView.separated(
@@ -258,14 +252,14 @@ class _MovieSeasonsListState extends ConsumerState<MovieSeasonsList> {
                                   width: 2,
                                 )
                               : null,
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(20),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Expanded(
                               child: ClipRRect(
-                                borderRadius: BorderRadius.circular(10),
+                                borderRadius: BorderRadius.circular(16),
                                 child: CachedNetworkImage(
                                   imageUrl: season.posterImageUrl ?? '',
                                   fit: BoxFit.cover,

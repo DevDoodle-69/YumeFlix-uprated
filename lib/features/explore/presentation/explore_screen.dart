@@ -21,6 +21,8 @@ import '../../../../core/utils/layout_constants.dart';
 import '../../../../core/utils/responsive_breakpoints.dart';
 import '../../../../core/providers/device_info_provider.dart';
 import '../../../../shared/widgets/shimmer_placeholder.dart';
+import '../../../../shared/widgets/ambient_background.dart';
+import '../../../core/theme/artwork_palette.dart';
 import '../../../../core/domain/entity/multimedia_item.dart';
 import '../../addons/presentation/addons_screen.dart';
 import 'widgets/explore_mode_selector_dialog.dart';
@@ -222,11 +224,18 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen>
 
                       return Tooltip(
                         message: tooltipMsg,
-                        child: CircleAvatar(
-                          backgroundColor: onSurfaceColor.withValues(
-                            alpha: 0.1,
+                        child: Container(
+                          width: 36,
+                          height: 36,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: onSurfaceColor.withValues(alpha: 0.08),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.14),
+                              width: 1,
+                            ),
                           ),
-                          radius: 18,
                           child: iconWidget,
                         ),
                       );
@@ -265,12 +274,21 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen>
                       borderRadius: BorderRadius.circular(50),
                       child: Tooltip(
                         message: isStremio ? 'Stremio Settings' : 'Filter',
-                        child: CircleAvatar(
-                          backgroundColor: (!isStremio && hasActiveFilter)
-                              ? Theme.of(context).colorScheme.primary
-                              : Theme.of(context).colorScheme.onSurface
-                                    .withValues(alpha: 0.1),
-                          radius: 18,
+                        child: Container(
+                          width: 36,
+                          height: 36,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: (!isStremio && hasActiveFilter)
+                                ? Theme.of(context).colorScheme.primary
+                                : Theme.of(context).colorScheme.onSurface
+                                      .withValues(alpha: 0.08),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.14),
+                              width: 1,
+                            ),
+                          ),
                           child: Icon(
                             isStremio
                                 ? Icons.dashboard_customize_rounded
@@ -301,10 +319,19 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen>
                     );
                   },
                   borderRadius: BorderRadius.circular(50),
-                  child: CircleAvatar(
-                    backgroundColor: Theme.of(context).colorScheme.onSurface
-                        .withValues(alpha: 0.1),
-                    radius: 18,
+                  child: Container(
+                    width: 36,
+                    height: 36,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Theme.of(context).colorScheme.onSurface
+                          .withValues(alpha: 0.08),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.14),
+                        width: 1,
+                      ),
+                    ),
                     child: Icon(
                       Icons.search,
                       color: Theme.of(context).colorScheme.onSurface,
@@ -315,7 +342,10 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen>
               ),
             ],
           ),
-          body: _withGradientEdgeHint(_buildActiveExploreBody(context)),
+          body: AmbientBackground(
+            accent: ref.watch(artworkAccentProvider),
+            child: _withGradientEdgeHint(_buildActiveExploreBody(context)),
+          ),
         );
       },
     );
@@ -357,7 +387,10 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen>
           ),
         ),
         Expanded(
-          child: _withGradientEdgeHint(_buildActiveExploreBody(context)),
+          child: AmbientBackground(
+            accent: ref.watch(artworkAccentProvider),
+            child: _withGradientEdgeHint(_buildActiveExploreBody(context)),
+          ),
         ),
       ],
     );
@@ -762,7 +795,7 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen>
         child: SizedBox(
           height: heroHeight,
           width: double.infinity,
-          child: ShimmerPlaceholder(borderRadius: 18),
+          child: ShimmerPlaceholder(borderRadius: 22),
         ),
       );
     } else {
@@ -829,7 +862,7 @@ class _ExploreScreenState extends ConsumerState<ExploreScreen>
                   ShimmerPlaceholder.rectangular(
                     width: cardWidth,
                     height: imageHeight,
-                    borderRadius: 12,
+                    borderRadius: 22,
                   ),
                 ],
               );

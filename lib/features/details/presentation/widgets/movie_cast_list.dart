@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../../shared/widgets/section_header.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 import '../../../../shared/widgets/thumbnail_error_placeholder.dart';
@@ -48,15 +49,8 @@ class _MovieCastListState extends State<MovieCastList> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (isDesktop) ...[
-          Text(
-            "Cast",
-            style: TextStyle(
-              color: widget.textColor,
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 20),
+          const SectionHeader(title: 'Cast', isLarge: true),
+          const SizedBox(height: 16),
           SizedBox(
             height: 140, // Height for Cast Cards
             child: DesktopScrollWrapper(

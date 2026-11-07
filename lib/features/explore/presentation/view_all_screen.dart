@@ -175,7 +175,7 @@ class _ViewAllScreenState extends ConsumerState<ViewAllScreen> {
               state.items.length + (state.isLoading ? crossAxisCount : 0),
           itemBuilder: (context, index) {
             if (index >= state.items.length) {
-              return ShimmerPlaceholder(borderRadius: 12);
+              return ShimmerPlaceholder(borderRadius: 22);
             }
 
             final item = state.items[index];
@@ -189,6 +189,9 @@ class _ViewAllScreenState extends ConsumerState<ViewAllScreen> {
               title: itemTitle,
               heroTag: uniqueTag,
               isPortrait: _isPortrait,
+              rating: item.score,
+              year: item.year,
+              durationMinutes: item.duration,
               onTap: () {
                 if (widget.onTap != null) {
                   widget.onTap!(item);

@@ -7,6 +7,7 @@ import 'package:yumeflix/core/utils/layout_constants.dart';
 import 'package:yumeflix/features/home/presentation/widgets/continue_watching_card.dart';
 import 'package:yumeflix/features/library/presentation/history_provider.dart';
 import 'package:yumeflix/shared/widgets/desktop_scroll_wrapper.dart';
+import 'package:yumeflix/shared/widgets/section_header.dart';
 import 'package:yumeflix/l10n/generated/app_localizations.dart';
 import 'package:yumeflix/core/services/notification_service.dart';
 
@@ -59,104 +60,78 @@ class _ContinueWatchingSectionState
             isLarge ? LayoutConstants.dashboardContentPadding : 16,
             LayoutConstants.spacingSm,
           ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      widget.title,
-                      style: TextStyle(
-                        fontSize: isLarge ? 24 : 20,
-                        fontWeight: FontWeight.bold,
-                        color: Theme.of(context).colorScheme.onSurface,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Container(
-                      width: isLarge ? 30 : 20,
-                      height: 3,
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.primary,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(LayoutConstants.radiusMd),
-                  hoverColor: Colors.red.withValues(alpha: 0.15),
-                  onTap: () {
-                    final l10n = AppLocalizations.of(context)!;
-                    showDialog<void>(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        title: Text(l10n.clearAllHistory),
-                        content: Text(l10n.confirmClearHistory),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(context),
-                            child: Text(l10n.cancel),
-                          ),
-                          TextButton(
-                            onPressed: () {
-                              ref
-                                  .read(watchHistoryProvider.notifier)
-                                  .clearAllHistory();
-                              Navigator.pop(context);
-                              ref
-                                  .read(notificationServiceProvider)
-                                  .showSuccess(
-                                    l10n.watchHistoryCleared,
-                                    title: 'Watch History',
-                                    icon: Icons.delete_sweep_rounded,
-                                  );
-                            },
-                            child: Text(
-                              l10n.clearAll,
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.error,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 10,
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.delete_outline,
-                          size: 16,
-                          color: Colors.red,
+          child: SectionHeader(
+            title: widget.title,
+            isLarge: isLarge,
+            trailing: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(LayoutConstants.radiusMd),
+                hoverColor: Colors.red.withValues(alpha: 0.15),
+                onTap: () {
+                  final l10n = AppLocalizations.of(context)!;
+                  showDialog<void>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: Text(l10n.clearAllHistory),
+                      content: Text(l10n.confirmClearHistory),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context),
+                          child: Text(l10n.cancel),
                         ),
-                        const SizedBox(width: 8),
-                        Text(
-                          AppLocalizations.of(context)!.clearAll,
-                          style: const TextStyle(
-                            color: Colors.red,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
+                        TextButton(
+                          onPressed: () {
+                            ref
+                                .read(watchHistoryProvider.notifier)
+                                .clearAllHistory();
+                            Navigator.pop(context);
+                            ref
+                                .read(notificationServiceProvider)
+                                .showSuccess(
+                                  l10n.watchHistoryCleared,
+                                  title: 'Watch History',
+                                  icon: Icons.delete_sweep_rounded,
+                                );
+                          },
+                          child: Text(
+                            l10n.clearAll,
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
+                            ),
                           ),
                         ),
                       ],
                     ),
+                  );
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.delete_outline,
+                        size: 16,
+                        color: Colors.red,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        AppLocalizations.of(context)!.clearAll,
+                        style: const TextStyle(
+                          color: Colors.red,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
-            ],
+            ),
           ),
         ),
         SizedBox(

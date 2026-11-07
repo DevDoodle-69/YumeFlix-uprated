@@ -1,6 +1,7 @@
 import 'package:dpad/dpad.dart';
 import 'package:flutter/material.dart';
 
+import '../../../../core/theme/design_tokens.dart';
 import '../../../../core/utils/layout_constants.dart';
 import '../../../../shared/focus/app_focus.dart';
 
@@ -61,7 +62,8 @@ class SourceSectionCard extends StatelessWidget {
   static const double gutter = LayoutConstants.spacingMd;
 
   /// Radius of the container, matched to the other panels on a details screen.
-  static const double radius = LayoutConstants.radiusXl;
+  /// 2.6.0: the shared 22 dp card radius.
+  static const double radius = YumeDesign.radiusCard;
 
   @override
   Widget build(BuildContext context) {
