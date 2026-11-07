@@ -8,6 +8,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import android.app.AlertDialog
+import android.app.PictureInPictureParams
 import android.content.pm.PackageManager
 import android.content.pm.Signature
 import android.os.Build
