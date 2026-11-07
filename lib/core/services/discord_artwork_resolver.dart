@@ -148,6 +148,95 @@ class DiscordArtworkResolver {
     }
   }
 
+  /// Keyless poster lookup via Stremio Cinemeta catalog search — the
+  /// fallback that needs NO IMDb id.
+  ///
+  /// `GET https://v3-cinemeta.strem.io/catalog/<series|movie>/top/search=<title>.json`
+  /// needs no key and returns matching metas with their `poster` /
+  /// `background`. This is the artwork source for plugin items in builds
+  /// shipped without a TMDB key: plugins send no `syncData.imdb`, and the
+  /// details-screen id enrichment needs a TMDB key to run, so
+  /// [resolveKeyless] (IMDb-gated) never fires for them and the extension
+  /// poster is the only candidate. When that fails verification, this is
+  /// what still finds a cover.
+  ///
+  /// Only an exact normalized-title match is accepted — a wrong film's
+  /// poster is worse than no poster. Returns null for an empty title, an
+  /// unsupported media type, a failed request, or no exact match with a
+  /// usable poster. Results (including misses) are cached per title/type.
+  Future<String?> resolveKeylessByTitle({
+    required String title,
+    required String mediaType,
+  }) async {
+    final type = mediaType.trim().toLowerCase();
+    final query = title.trim();
+    if (query.isEmpty || (type != 'movie' && type != 'tv')) {
+      return null;
+    }
+    final kind = type == 'tv' ? 'series' : 'movie';
+    final cacheKey =
+        'cinemeta-title|$type|${_normalizedTitle(query)}';
+    return _cachedFetch(
+      cacheKey,
+      () => _fetchCinemetaByTitle(kind: kind, query: query),
+    );
+  }
+
+  Future<String?> _fetchCinemetaByTitle({
+    required String kind,
+    required String query,
+  }) async {
+    try {
+      final response = await _dio.getUri<Map<String, dynamic>>(
+        Uri.parse(
+          '$cinemetaBaseUrl/catalog/$kind/top/'
+          'search=${Uri.encodeComponent(query)}.json',
+        ),
+        options: Options(headers: const {'Accept': 'application/json'}),
+      );
+      if (response.statusCode != 200 || response.data == null) return null;
+      return posterUrlFromCinemetaSearchResponse(
+        response.data!,
+        query: query,
+      );
+    } catch (_) {
+      // Presence must survive Cinemeta being down: the caller sends no
+      // image rather than failing playback.
+      return null;
+    }
+  }
+
+  /// Poster (medium-upgraded) of the exact normalized-title match in a
+  /// Cinemeta catalog-search response, background as a last resort, or null
+  /// when no result matches the title exactly. Exposed for focused tests.
+  @visibleForTesting
+  static String? posterUrlFromCinemetaSearchResponse(
+    Map<String, dynamic> response, {
+    required String query,
+  }) {
+    final queryKey = _normalizedTitle(query);
+    if (queryKey.isEmpty) return null;
+    final metas = response['metas'];
+    if (metas is! List) return null;
+    for (final raw in metas) {
+      if (raw is! Map) continue;
+      final meta = Map<String, dynamic>.from(raw);
+      if (_normalizedTitle(meta['name']?.toString()) != queryKey) {
+        continue;
+      }
+      final poster = (meta['poster'] as String?)?.trim();
+      if (poster != null && poster.isNotEmpty) {
+        final upgraded = _upgradeCinemetaPoster(poster);
+        if (upgraded != null) return upgraded;
+      }
+      final background = (meta['background'] as String?)?.trim();
+      if (background != null && background.isNotEmpty) {
+        return _asHttpsImageUrl(background);
+      }
+    }
+    return null;
+  }
+
   /// Poster first, background as a last resort, from a Cinemeta
   /// `/meta/<type>/<imdb>.json` response. Cinemeta serves posters in
   /// `small`/`medium`/`large` sizes; the `medium` variant is used so the
@@ -227,12 +316,25 @@ class DiscordArtworkResolver {
     try {
       final head = await _dio.headUri<void>(
         uri,
-        options: Options(validateStatus: (_) => true),
+        options: Options(
+          validateStatus: (_) => true,
+          // Verification runs off the playback path and a false negative
+          // costs the whole cover, so it gets more room than the 5s API
+          // defaults: a slow HEAD must not kill a good poster by itself.
+          // (Live probe, 2026-11-07: image.tmdb.org HEADs intermittently
+          // exceeded 5s through this machine's egress proxy and the
+          // candidate was dropped, while the same URL verified fine a
+          // minute later.)
+          connectTimeout: _verifyTimeout,
+          receiveTimeout: _verifyTimeout,
+        ),
       );
       if (_isImageResponse(head.statusCode, head.headers)) return true;
-      // Some CDNs reject HEAD (405/501) while serving GET fine; a ranged
-      // GET proves fetchability without downloading the whole poster.
-      if (head.statusCode == 405 || head.statusCode == 501) {
+      // Some CDNs reject HEAD (405/501) while serving GET fine, and some
+      // hosts answer HEAD with a redirect the platform stack does not
+      // follow for HEAD; a ranged GET proves fetchability either way
+      // without downloading the whole poster.
+      if (_headNeedsRangedGet(head.statusCode)) {
         return await _verifyWithRangedGet(uri);
       }
       return false;
@@ -241,6 +343,21 @@ class DiscordArtworkResolver {
     }
   }
 
+  /// Verification-only timeout, longer than the API defaults (see above).
+  static const Duration _verifyTimeout = Duration(seconds: 10);
+
+  /// HEAD outcomes that do not settle fetchability and deserve a ranged
+  /// GET: HEAD refused (405/501) or a redirect (301/302/303/307/308) the
+  /// HEAD stack may not have followed.
+  static bool _headNeedsRangedGet(int? statusCode) =>
+      statusCode == 405 ||
+      statusCode == 501 ||
+      statusCode == 301 ||
+      statusCode == 302 ||
+      statusCode == 303 ||
+      statusCode == 307 ||
+      statusCode == 308;
+
   Future<bool> _verifyWithRangedGet(Uri uri) async {
     try {
       final response = await _dio.getUri<void>(
@@ -248,6 +365,8 @@ class DiscordArtworkResolver {
         options: Options(
           headers: const {'Range': 'bytes=0-1023'},
           validateStatus: (_) => true,
+          connectTimeout: _verifyTimeout,
+          receiveTimeout: _verifyTimeout,
         ),
       );
       return _isImageResponse(response.statusCode, response.headers);

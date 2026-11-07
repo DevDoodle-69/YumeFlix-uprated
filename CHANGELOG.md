@@ -1,3 +1,23 @@
+# YumeFlix 2.8.0 — Together, perfected: host control, no latency, 5 MB chat photos
+
+### Enjoy Together — the priority: professional, accurate, no latency
+- Host has full control: play, pause, seek, changing movie/episode — the guest follows exactly. While live, guest playback controls are host-only and clearly shown as such, so guest input can never fight the host.
+- No latency: host actions publish state IMMEDIATELY (play/pause/seek/title change never wait for the next heartbeat); the heartbeat is now 1 s and only a backstop. Drift correction tightened (rate-nudge within 150 ms, seek beyond 750 ms), guest evaluation runs twice as fast, and the status pill shows the real measured relay latency.
+- Rejoin/resync is fast and exact: retained state plus an immediate state push when a guest joins; a title change clears the old position and re-shares the new title at 0.
+- Start button redesigned (the 2.7.0 "Ready to start" pill showed all the time in red underlined text): while browsing the room shows only the small neutral draggable pill — no start text anywhere. Once something is actually playing, a compact dark run button appears (play icon + "Start", muted slate-blue, no red, no underline, no glow). Tapping it starts Together streaming and the button vanishes at once, replaced by a tiny "Live" dot and the glass chat button; it never reappears while live.
+- Chat photos up to 5 MB (was ~120 KB, PNG-only): JPEG, PNG, WebP and GIF. Oversize photos are downscaled/compressed on-device until they fit; only an unfixable image is refused, with a clear message. Because the public MQTT relay cannot carry a 5 MB message, photos travel as 32 KiB chunks with message id + index/total + SHA-256 integrity, reassembly only when complete and verified, progress while sending/receiving, and retry of missing chunks (chunks are paced 250 ms apart — the public relay drops rapid bursts, proven live).
+
+### Discord cover — best effort, hardened (2.7.0 still showed no cover for Dexter)
+- Root cause: the keyless fallback needed an IMDb id that plugin items never carry, the player collapsed all artwork into a single URL, and verification of image.tmdb.org is flaky under short timeouts (proven live: the same URL failed, then passed minutes later).
+- Fixed: keyless Cinemeta title search needs no id at all (exact-title match only); the player now passes every artwork URL (episode still, item poster, banner) and each is verified in order; the verifier falls through to ranged GET on redirects and uses 10 s timeouts. Still never a dead asset key: no verified poster means no image is sent. Settings -> Discord diagnostics show the exact large_image value sent.
+
+### UI polish — more professional, more accurate
+- Red is no longer used as normal UI: filter-active dots, search active bars, DEBUG chips/badges and the LIVE badge now use the muted slate-blue accent or neutral grey. The only red left is for genuinely destructive actions (Delete/Clear) and real error states. Underlines appear only on real links. Remaining gradients are neutral black/white legibility scrims over artwork, never colour.
+
+### Live verification — tools/live_check.dart now checks six things live
+- Together MQTT round-trip, chunked ~1 MB photo round-trip (byte-exact SHA-256), Discord poster chain for Harry Potter (movie) AND Dexter: Resurrection (series, by id and by title search), MovieSubLK live, and the Together start flow over the real broker (browsing shows no go-live state, Start publishes a retained playing state, title change re-shares at position 0).
+
+
 # YumeFlix 2.7.0 — Discord cover fixed live, Together fixed live, minimal professional restyle, MovieSubLK provider
 
 ### Discord cover — fixed for real (proven live)

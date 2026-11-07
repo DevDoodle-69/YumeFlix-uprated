@@ -7,8 +7,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/providers/device_info_provider.dart';
+import '../../../core/theme/design_tokens.dart';
 import '../together_provider.dart';
 import '../together_service.dart';
+import 'together_start_button.dart';
 
 /// The floating "Enjoy Together" orb: the room, always within reach.
 ///
@@ -21,20 +23,38 @@ import '../together_service.dart';
 /// blur, hairline border, no halo, no pulse), draggable anywhere on screen.
 /// The only motion is a subtle scale on press.
 ///
+/// Start-button state machine (2.8.0) — decided in one place, the service
+/// ([TogetherService.startState]), never here:
+///
+/// * browsing — the room is open but nothing is playing yet: the orb is
+///   ONLY the small neutral pill ("Enjoy Together"). There is no
+///   "Ready to start" text anywhere, never a start prompt over
+///   non-player screens, and never while the movie is paused.
+/// * ready — the host picked a title, a player is open, and the movie is
+///   actually playing: the pill becomes the compact Start run button
+///   (dark pill, slate-blue play icon, white "Start", no red, no
+///   underline, no glow). Tapping it goes live at once.
+/// * live — the Start button is gone, replaced by the tiny Live indicator
+///   (slate-blue dot + "Live"). It never reappears while live.
+/// * leaving the player without going live, or pausing, drops the state
+///   back to browsing; Start returns only when playback resumes.
+///
 /// Start and chat come from the player while one is open: the player hook
 /// registers its `goLive` and the player screen its open-chat action on
 /// the service ([TogetherService.orbStartAction] /
 /// [TogetherService.orbOpenChatAction]), and the orb reads them here. With
-/// no player open, Start falls back to opening the title to start.
+/// no player open there is no Start at all — the orb never falls back to
+/// opening a title to start.
 ///
 /// The position is a screen fraction kept in [TogetherService] for the
 /// session and persisted to SharedPreferences, so it survives rotation,
 /// app restarts and different screen sizes.
 ///
-/// Tap toggles the expanded card: live room status (a real MQTT fact),
-/// the picked title, the room code with copy, who is in the room, and the
-/// actions that make sense right now — Start (host, in the player),
-/// Pick a title (host, while browsing), Chat (in the player) and Leave.
+/// Tap toggles the expanded card, EXCEPT while ready, where a tap is the
+/// Start itself: live room status (a real MQTT fact), the picked title,
+/// the room code with copy, who is in the room, and the actions that make
+/// sense right now — Start (host, in the player, while playing), Pick a
+/// title (host, while browsing), Chat (in the player) and Leave.
 ///
 /// TV never sees it: [DeviceProfile.isTv] hides Together entirely, the
 /// same rule that hides the 5th nav tab (`showTogether: !profile.isTv`).
@@ -101,7 +121,15 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
     if (!service.isSessionActive || isTv) return const SizedBox.shrink();
 
     final size = MediaQuery.sizeOf(context);
-    final width = _expanded ? _kExpandedWidth : _kCollapsedWidth;
+    // The ready / live pills are compact run / status chips, much
+    // narrower than the browsing pill — the drag clamp uses the width
+    // actually rendered, so a narrow pill can still reach the screen edge.
+    final collapsedWidth = switch (service.startState) {
+      TogetherStartState.ready => 104.0,
+      TogetherStartState.live => 92.0,
+      _ => _kCollapsedWidth,
+    };
+    final width = _expanded ? _kExpandedWidth : collapsedWidth;
     final left = (_fraction.dx * size.width)
         .clamp(8.0, math.max(8.0, size.width - width - 8.0))
         .toDouble();
@@ -131,6 +159,16 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
         onTapCancel: () => setState(() => _pressed = false),
         onTap: () {
           if (_dragMoved) return;
+          // Ready: the collapsed pill IS the Start button — a tap goes
+          // live at once instead of opening the card. goLive flips the
+          // phase to live synchronously, so the button vanishes in the
+          // same rebuild and the Live indicator takes its place.
+          if (!_expanded &&
+              service.startState == TogetherStartState.ready) {
+            final onStart = widget.onStart ?? service.orbStartAction;
+            onStart?.call();
+            return;
+          }
           setState(() => _expanded = !_expanded);
         },
         // 2.7.0: no breathing pulse, no halo — a subtle press scale only,
@@ -172,18 +210,26 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
   }
 
   Widget _collapsedPill(BuildContext context, TogetherService service) {
+    // Ready and live get their own compact pills below; browsing /
+    // reconnecting / waiting share the neutral pill. There is deliberately
+    // no "Ready to start" state anywhere: while browsing the orb is only
+    // ever the neutral pill, and Start appears only as the run button,
+    // only while the movie is playing.
+    switch (service.startState) {
+      case TogetherStartState.ready:
+        return _startRunPill();
+      case TogetherStartState.live:
+        return _livePill();
+      case TogetherStartState.hidden:
+      case TogetherStartState.browsing:
+        break;
+    }
     final colorScheme = Theme.of(context).colorScheme;
-    final isLive = service.isLive;
     final isGuestWaiting = service.phase == TogetherPhase.waitingGuest;
     final label = service.reconnecting
         ? 'Reconnecting…'
-        : isLive
-        ? '● LIVE'
         : isGuestWaiting
         ? 'Waiting for host…'
-        : service.role == TogetherRole.host &&
-                service.pendingMedia != null
-        ? 'Ready to start'
         : 'Enjoy Together';
     return _glass(
       context,
@@ -197,9 +243,7 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
               Icon(
                 Icons.group_rounded,
                 size: 22,
-                color: isLive
-                    ? colorScheme.primary
-                    : colorScheme.onSurface,
+                color: colorScheme.onSurface,
               ),
               const SizedBox(width: 8),
               Expanded(
@@ -208,8 +252,10 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
+                    color: YumeDesign.textPrimary,
                     fontWeight: FontWeight.w700,
                     fontSize: 14,
+                    decoration: TextDecoration.none,
                   ),
                 ),
               ),
@@ -235,6 +281,80 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
     );
   }
 
+  /// The compact Start run button (2.8.0): a small dark pill — raised
+  /// near-black fill, hairline border, muted slate-blue play icon, white
+  /// 13 pt "Start". No red, no underline, no glow. The tap itself is
+  /// handled by the outer [GestureDetector] (a tap while ready goes live
+  /// instead of expanding), so this is display only — no nested button
+  /// to fight the drag recogniser.
+  Widget _startRunPill() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: BoxDecoration(
+        color: YumeDesign.surfaceRaised,
+        borderRadius: YumeDesign.pillRadius,
+        border: Border.all(color: YumeDesign.hairlineStrong),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.play_arrow_rounded,
+            size: 18,
+            color: YumeDesign.accentLight,
+          ),
+          SizedBox(width: 6),
+          Text(
+            'Start',
+            style: TextStyle(
+              color: YumeDesign.textPrimary,
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              decoration: TextDecoration.none,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The tiny live indicator that replaces the Start button the moment
+  /// the room goes live: a slate-blue dot + "Live", same dark pill, same
+  /// neutral palette. Tapping it expands the card (chat, code, Leave).
+  Widget _livePill() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: YumeDesign.surfaceRaised,
+        borderRadius: YumeDesign.pillRadius,
+        border: Border.all(color: YumeDesign.hairlineStrong),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: const BoxDecoration(
+              color: YumeDesign.accent,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 6),
+          const Text(
+            'Live',
+            style: TextStyle(
+              color: YumeDesign.textPrimary,
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              decoration: TextDecoration.none,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _expandedCard(BuildContext context, TogetherService service) {
     final colorScheme = Theme.of(context).colorScheme;
     final media = service.currentMedia;
@@ -242,11 +362,19 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
     final isHost = service.role == TogetherRole.host;
     final isPendingHost =
         isHost && service.phase == TogetherPhase.pendingHost;
-    final canStart = isPendingHost && media != null;
+    // Start is offered only while the room is actually ready: a title
+    // picked, a player open, and the movie playing. A host who expanded
+    // the card while browsing sees a neutral hint instead of a Start
+    // button they cannot use yet — never a start prompt over a paused or
+    // absent player.
+    final canStart =
+        isPendingHost &&
+        media != null &&
+        service.startState == TogetherStartState.ready;
     // Start / chat actions: the player registers them on the service while
     // it is open; the widget's own callbacks override (tests, direct
-    // mounts). No player open means no engine to go live from, so Start
-    // falls back to opening the title.
+    // mounts). No player open means no engine to go live from, so there
+    // is no Start at all until a player is open and playing.
     final onStart = widget.onStart ?? service.orbStartAction;
     final onOpenChat = widget.onOpenChat ?? service.orbOpenChatAction;
     return _glass(
@@ -354,27 +482,22 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
               ),
               const SizedBox(height: 12),
               if (canStart && onStart != null)
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
+                Center(
+                  child: TogetherStartButton(
                     onPressed: () {
                       setState(() => _expanded = false);
                       onStart.call();
                     },
-                    icon: const Icon(Icons.play_arrow_rounded),
-                    label: const Text('Start together'),
                   ),
                 )
-              else if (canStart)
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: () {
-                      setState(() => _expanded = false);
-                      context.go('/search');
-                    },
-                    icon: const Icon(Icons.search_rounded),
-                    label: const Text('Open the title to start'),
+              else if (isPendingHost && media != null)
+                const Text(
+                  'Play the movie first — the Start button appears once '
+                  'it’s playing.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: YumeDesign.textSecondary,
+                    decoration: TextDecoration.none,
                   ),
                 )
               else if (isPendingHost)

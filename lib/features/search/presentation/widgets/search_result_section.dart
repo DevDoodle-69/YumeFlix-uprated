@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../../../../core/theme/design_tokens.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:yumeflix/core/utils/responsive_breakpoints.dart';
 
@@ -170,7 +171,7 @@ class _SearchResultSectionState extends ConsumerState<SearchResultSection> {
 
     return const Padding(
       padding: EdgeInsets.only(left: 8.0),
-      child: GlassChip(label: 'DEBUG', accent: Colors.redAccent, filled: true),
+      child: GlassChip(label: 'DEBUG', accent: YumeDesign.textMuted, filled: true),
     );
   }
 }

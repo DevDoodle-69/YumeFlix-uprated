@@ -38,7 +38,7 @@ class LiveTvIndicator extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final color = isActive
-        ? (activeColor ?? Colors.redAccent)
+        ? (activeColor ?? YumeDesign.accentLight)
         : (inactiveColor ?? theme.colorScheme.onSurface.withValues(alpha: 0.6));
 
     return Row(

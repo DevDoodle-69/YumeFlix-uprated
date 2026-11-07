@@ -1,36 +1,62 @@
 import 'package:flutter/material.dart';
 
-/// The floating Start button: the host's "go live" moment.
+import '../../../core/theme/design_tokens.dart';
+
+/// The Together Start run button: the host's "go live" moment, kept
+/// deliberately small.
 ///
-/// A flat, minimal filled button in the single muted accent — no bob,
-/// no halo. Used on the Together tab while a room is pending and over
-/// the player once the title is open.
-class TogetherStartButton extends StatefulWidget {
+/// A compact dark pill — [YumeDesign.surfaceRaised] fill, hairline
+/// border, muted slate-blue play icon, white 13 pt "Start" label — no
+/// red, no underline, no glow, no large filled block. It renders only
+/// while the service says the room is ready
+/// ([TogetherService.startState] == `ready`): a title picked, a player
+/// open, and the movie actually playing. The moment it is tapped the
+/// room goes live and the button vanishes, replaced by the tiny Live
+/// indicator; pausing or leaving the player hides it again until
+/// playback resumes.
+class TogetherStartButton extends StatelessWidget {
   const TogetherStartButton({required this.onPressed, super.key});
 
   final VoidCallback onPressed;
 
   @override
-  State<TogetherStartButton> createState() => _TogetherStartButtonState();
-}
-
-class _TogetherStartButtonState extends State<TogetherStartButton> {
-  @override
   Widget build(BuildContext context) {
-    return FilledButton.icon(
-      onPressed: widget.onPressed,
-      icon: const Icon(Icons.play_arrow_rounded, size: 26),
-      label: const Padding(
-        padding: EdgeInsets.symmetric(vertical: 4),
-        child: Text(
-          'Start watching together',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-        ),
-      ),
-      style: FilledButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
+    return Semantics(
+      button: true,
+      label: 'Start watching together',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: YumeDesign.pillRadius,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            decoration: BoxDecoration(
+              color: YumeDesign.surfaceRaised,
+              borderRadius: YumeDesign.pillRadius,
+              border: Border.all(color: YumeDesign.hairlineStrong),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.play_arrow_rounded,
+                  size: 18,
+                  color: YumeDesign.accentLight,
+                ),
+                SizedBox(width: 6),
+                Text(
+                  'Start',
+                  style: TextStyle(
+                    color: YumeDesign.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    decoration: TextDecoration.none,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

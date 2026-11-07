@@ -8,7 +8,6 @@ import '../models.dart';
 import '../together_provider.dart';
 import '../together_service.dart';
 import 'together_connection_status.dart';
-import 'together_start_button.dart';
 import 'together_waiting_state.dart';
 
 /// The Together tab: watch the same title on two phones, in sync.
@@ -104,11 +103,11 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
     }
 
     final media = service.currentMedia;
-    final showStart =
-        service.role == TogetherRole.host &&
-        service.phase == TogetherPhase.pendingHost &&
-        media != null;
 
+    // No Start button lives on this tab (2.8.0): Start appears only on
+    // the floating orb, and only once the host is actually playing the
+    // title in the player. The tab's job is creating / joining the room
+    // and picking a title — the orb carries the room from there.
     return Scaffold(
       appBar: AppBar(
         title: const Text('Together'),
@@ -125,70 +124,40 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
             ),
         ],
       ),
-      body: Stack(
-        children: [
-          SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 120),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (service.error != null) _errorBanner(service, colorScheme),
-                if (service.reconnecting)
-                  _reconnectingBanner(service, colorScheme),
-                if (service.phase == TogetherPhase.idle &&
-                    service.lastRoom != null)
-                  _rejoinCard(service, colorScheme),
-                if (media != null) ...[
-                  _mediaCard(media, colorScheme),
-                  const SizedBox(height: 16),
-                ],
-                switch (service.phase) {
-                  TogetherPhase.idle => _idleChoices(service),
-                  TogetherPhase.error => _idleChoices(service),
-                  TogetherPhase.pendingHost => _pendingHostCard(service),
-                  TogetherPhase.waitingGuest => _waitingCard(service),
-                  TogetherPhase.live => _liveCard(service),
-                },
-                const SizedBox(height: 24),
-                Text(
-                  'Low-latency, drift-corrected sync — the guest follows '
-                  'the host’s play, pause and seeks. Each phone streams '
-                  'the title itself; the room only carries timing and chat.',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
-          if (showStart)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 28,
-              child: Center(
-                child: TogetherStartButton(
-                  onPressed: () => _run(() async {
-                    service.goLive(
-                      positionMs: service.lastLocalPositionMs,
-                      durationMs: 0,
-                    );
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'Live! Open the title to watch together.',
-                          ),
-                        ),
-                      );
-                    }
-                    return true;
-                  }),
-                ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 120),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (service.error != null) _errorBanner(service, colorScheme),
+            if (service.reconnecting)
+              _reconnectingBanner(service, colorScheme),
+            if (service.phase == TogetherPhase.idle &&
+                service.lastRoom != null)
+              _rejoinCard(service, colorScheme),
+            if (media != null) ...[
+              _mediaCard(media, colorScheme),
+              const SizedBox(height: 16),
+            ],
+            switch (service.phase) {
+              TogetherPhase.idle => _idleChoices(service),
+              TogetherPhase.error => _idleChoices(service),
+              TogetherPhase.pendingHost => _pendingHostCard(service),
+              TogetherPhase.waitingGuest => _waitingCard(service),
+              TogetherPhase.live => _liveCard(service),
+            },
+            const SizedBox(height: 24),
+            Text(
+              'Low-latency, drift-corrected sync — the guest follows '
+              'the host’s play, pause and seeks. Each phone streams '
+              'the title itself; the room only carries timing and chat.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
               ),
+              textAlign: TextAlign.center,
             ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -361,7 +330,8 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
           title: 'Create a room',
           subtitle:
               'Get a 6-digit code — the Enjoy Together orb appears at once, '
-              'while you browse. Pick something to watch, then press Start.',
+              'while you browse. Pick something to watch, play it, then '
+              'press Start on the orb.',
           buttonLabel: 'Create room',
           onPressed: _busy ? null : () => _run(service.createRoom),
         ),
@@ -462,8 +432,8 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
         const SizedBox(height: 14),
         Text(
           service.guestPresent
-              ? '✓ Your friend joined — pick something to watch, then '
-                    'press Start.'
+              ? '✓ Your friend joined — pick something to watch, play it, '
+                    'then press Start on the orb.'
               : 'Waiting for your friend to join with the code…',
           textAlign: TextAlign.center,
         ),
@@ -481,7 +451,8 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
         const SizedBox(height: 6),
         const Text(
           'The Enjoy Together orb is now floating — drag it anywhere, '
-          'tap it for the code and Start.',
+          'tap it for the code. The Start button appears on the orb once '
+          'your movie is playing.',
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 12),
         ),

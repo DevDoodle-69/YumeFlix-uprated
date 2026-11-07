@@ -473,7 +473,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                               vertical: 2,
                             ),
                             decoration: BoxDecoration(
-                              color: Colors.red,
+                              color: YumeDesign.textMuted,
                               borderRadius: BorderRadius.circular(4),
                             ),
                             child: Text(
@@ -1269,7 +1269,7 @@ class _ProviderSelectorDialogState extends State<_ProviderSelectorDialog> {
                                           vertical: 2,
                                         ),
                                         decoration: BoxDecoration(
-                                          color: Colors.red,
+                                          color: YumeDesign.textMuted,
                                           borderRadius: BorderRadius.circular(
                                             4,
                                           ),

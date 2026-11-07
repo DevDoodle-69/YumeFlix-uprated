@@ -132,9 +132,13 @@ class TogetherRoomState {
 
 /// One chat message in a Together room.
 ///
-/// Text or a small image, never both; an optional reply quotes the message
-/// it answers. Images travel as base64 over the same relay topic, downscaled
-/// before sending (see [TogetherService.sendChatImage]).
+/// Text or an image, never both; an optional reply quotes the message
+/// it answers. Images travel CHUNKED over the same relay topic (see
+/// `chat_image_chunks.dart`): up to 5 MB, split into 32 KiB pieces with
+/// a SHA-256 check on reassembly — never one giant message. By the time
+/// a message with [imageBase64] exists in a list, its bytes are complete
+/// and verified; a transfer still missing pieces is not a message yet
+/// (see [TogetherService.imageTransfers]).
 class TogetherChatMessage {
   const TogetherChatMessage({
     required this.id,
@@ -252,7 +256,7 @@ enum TogetherRoomStatus {
 /// Non-retained, sent on every status change, re-sent when a guest joins
 /// (presence `joined`), and repeated inside the host's heartbeats — so a
 /// guest that joins late or loses a packet still learns the status within
-/// one heartbeat (2 s) without ever touching the retained state slot.
+/// one heartbeat (1 s) without ever touching the retained state slot.
 class TogetherRoomStatusMessage {
   const TogetherRoomStatusMessage({
     required this.status,

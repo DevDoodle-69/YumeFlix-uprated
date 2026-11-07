@@ -47,7 +47,8 @@ class TogetherPlayerHook {
   double _appliedRate = 1.0;
 
   /// Last time the guest evaluated the host state (throttled: the engine
-  /// ticks four times a second and the decision only changes slowly).
+  /// ticks four times a second and the decision only changes slowly —
+  /// 500 ms between evaluations, 250 ms for a forced one).
   DateTime? _lastGuestEvalAt;
 
   /// True while a room exists in any form — creating, waiting or live.
@@ -62,17 +63,19 @@ class TogetherPlayerHook {
       service.isLive &&
       !service.hostGone;
 
-  /// True when the host has picked this title but not pressed Start yet:
-  /// the player shows the floating Start button.
-  bool get showStartButton =>
-      service.role == TogetherRole.host &&
-      service.phase == TogetherPhase.pendingHost &&
-      service.pendingMedia != null;
+  /// True when the host may go live right now: the room is pending, a
+  /// title is picked, this player is open, and the movie is actually
+  /// playing. Decided by the service ([TogetherService.startState]) —
+  /// the hook never keeps its own copy of the conditions, so the player
+  /// and the orb can never disagree. Pausing, or leaving the player,
+  /// hides the button again until playback resumes.
+  bool get showStartButton => service.showStartButton;
 
   /// Same condition as [showStartButton], for the floating orb: the orb's
   /// Start action goes live from wherever the host is watching, not only
-  /// from the player screen's own button.
-  bool get showOrbStart => showStartButton;
+  /// from the player screen's own button. The orb renders the compact
+  /// Start run button only in this state, and only while it holds.
+  bool get showOrbStart => service.showStartButton;
 
   /// The title the host started, when this phone is a guest in a live room.
   /// The player screen shows this when the guest has not opened the same
@@ -130,6 +133,16 @@ class TogetherPlayerHook {
   }
 
   /// Called from the screen's playback-value listener, on every engine tick.
+  ///
+  /// For a guest in a live room this is also the enforcement point of
+  /// host-only control: the player chrome already renders the guest's
+  /// controls disabled with a "Host controls playback" hint, but a guest
+  /// input that reaches the engine anyway (remote key, double-tap, a
+  /// control that slipped through) is snapped back at once — a transport
+  /// flip or a seek-sized jump against the host's state applies the host
+  /// state immediately instead of waiting for the next throttled
+  /// evaluation, so the guest's engine can never fight the host for more
+  /// than one tick.
   void onLocalPlayback(VlcPlayerValue value) {
     if (!_attached || _applyingRemote) return;
     service.reportLocalPlayback(
@@ -138,8 +151,24 @@ class TogetherPlayerHook {
       playing: value.isPlaying,
     );
     if (service.role == TogetherRole.guest && service.isLive) {
-      _maybeApplyHostState();
+      _maybeApplyHostState(force: _divergedFromHost(value));
     }
+  }
+
+  /// True when the guest's engine disagrees with the host's latest state
+  /// by more than a nudge: a different transport state, or a position
+  /// further than the seek threshold from where the host is now. A
+  /// disagreement this big is a guest input (or a fresh join), not drift
+  /// — it earns an immediate correction, not a throttled one.
+  bool _divergedFromHost(VlcPlayerValue value) {
+    final state = service.roomState;
+    if (state == null || service.hostGone) return false;
+    if (value.isPlaying != state.playing) return true;
+    final target = state.targetPositionMs(
+      nowMs: DateTime.now().millisecondsSinceEpoch,
+    );
+    return (value.position.inMilliseconds - target).abs() >
+        kSyncSeekThresholdMs;
   }
 
   void _onServiceChanged() {
@@ -162,11 +191,17 @@ class TogetherPlayerHook {
     final state = service.roomState;
     if (state == null || service.hostGone) return;
     final now = DateTime.now();
-    if (!force &&
-        _lastGuestEvalAt != null &&
-        now.difference(_lastGuestEvalAt!).inMilliseconds < 1000) {
-      return;
-    }
+    // Evaluations are throttled — 500 ms apart normally (2.8.0, was
+    // 1000 ms), so small drift is nudged twice a second instead of once.
+    // A forced evaluation (a host action just arrived via
+    // [_onServiceChanged], or the guest diverged in [onLocalPlayback])
+    // skips the normal wait but still respects a 250 ms floor, so an
+    // engine mid-seek is not hammered with a seek on every tick.
+    final sinceLastEval = _lastGuestEvalAt == null
+        ? null
+        : now.difference(_lastGuestEvalAt!).inMilliseconds;
+    final minGapMs = force ? 250 : 500;
+    if (sinceLastEval != null && sinceLastEval < minGapMs) return;
     _lastGuestEvalAt = now;
     final decision = decideSync(
       localPositionMs: controller.value.position.inMilliseconds,
@@ -207,7 +242,7 @@ class TogetherPlayerHook {
       }
     } catch (_) {
       // The engine may be mid-failover or tearing down; the next
-      // evaluation (a second away) retries. Never throw out of a sync tick.
+      // evaluation (half a second away) retries. Never throw out of a sync tick.
     } finally {
       _applyingRemote = false;
     }

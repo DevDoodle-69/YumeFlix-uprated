@@ -295,17 +295,33 @@ void main() {
 
       // Start on the orb uses the player-registered action when one is
       // registered, and the room goes live from it. Expand the pill first
-      // (its label is 'Enjoy Together' until a title is picked, then it
-      // becomes 'Ready to start'), then pick the title and press Start.
+      // (its label is 'Enjoy Together' while browsing — there is no
+      // 'Ready to start' anywhere), then open the player (register the
+      // Start action), pick the title and press play: only then does the
+      // compact 'Start' button appear in the card.
       await tester.tap(find.text('Enjoy Together'));
       await tester.pump();
       expect(find.text('Pick a title to watch'), findsOneWidget);
+      expect(find.text('Start'), findsNothing);
       var started = false;
       service.registerOrbStartAction(() => started = true);
       service.attachMedia(mediaA);
       await tester.pump();
-      expect(find.text('Start together'), findsOneWidget);
-      await tester.tap(find.text('Start together'));
+      // Picked but not playing yet: still no Start.
+      expect(find.text('Start'), findsNothing);
+      expect(
+        find.text('Play the movie first — the Start button appears once '
+            'it’s playing.'),
+        findsOneWidget,
+      );
+      service.reportLocalPlayback(
+        positionMs: 0,
+        durationMs: 600000,
+        playing: true,
+      );
+      await tester.pump();
+      expect(find.text('Start'), findsOneWidget);
+      await tester.tap(find.text('Start'));
       await tester.pump();
       expect(started, isTrue);
     });

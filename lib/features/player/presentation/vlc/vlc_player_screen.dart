@@ -2851,14 +2851,16 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
   /// numbers because VlcPlayerValue merges into its predecessor.
   void _publishDiscordActivity(VlcPlayerValue value) {
     final episode = _currentEpisode;
-    // Provider episodes are the most accurate source of artwork. Some
-    // extensions expose only a banner/background on the parent item, so keep
-    // that as the final source before the asynchronous TMDB fallback.
-    final extensionPoster = _firstUsableArtwork([
+    // Every artwork the player knows about, in preference order — episode
+    // still, item poster, banner. The presence service verifies each in
+    // turn; passing only the first usable one used to discard the item
+    // poster entirely when the episode still failed verification, which is
+    // how a series with a good poster ended up with no Discord cover.
+    final extensionPosters = [
       episode?.posterUrl,
       widget.item.posterUrl,
       widget.item.bannerUrl,
-    ]);
+    ];
     // The title is the clean item title; the S/E suffix applies only to a
     // true series/anime episode with real numbering (see
     // [DiscordPresenceService.formatWatchingTitle]), and the TMDB search
@@ -2878,7 +2880,11 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       DiscordPresenceService.instance.updateWatching(
         title: title,
         state: episode?.name ?? 'Watching',
-        posterUrl: extensionPoster,
+        posterUrl: extensionPosters.firstWhere(
+          (url) => url?.trim().isNotEmpty == true,
+          orElse: () => null,
+        ),
+        posterUrls: extensionPosters,
         tmdbSearchTitle: widget.item.title,
         tmdbMediaType: isSeries ? 'tv' : 'movie',
         tmdbId: widget.item.tmdbId,
@@ -2894,14 +2900,6 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
         playing: value.isPlaying,
       ),
     );
-  }
-
-  String? _firstUsableArtwork(Iterable<String?> candidates) {
-    for (final candidate in candidates) {
-      final value = candidate?.trim();
-      if (value != null && value.isNotEmpty) return value;
-    }
-    return null;
   }
 
   void _onPlaybackValue() {

@@ -9,6 +9,7 @@ import 'package:mqtt_client/mqtt_server_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:typed_data/typed_data.dart';
 
+import 'chat_image_chunks.dart';
 import 'connection.dart';
 import 'models.dart';
 import 'sync_math.dart';
@@ -50,21 +51,69 @@ enum TogetherPhase {
 
 enum TogetherRole { host, guest }
 
-/// Maximum image payload for a chat photo, after downscaling: ~120 KB of
-/// base64-able bytes. A photo that is still bigger is refused with a toast
-/// rather than breaking the room for the other phone.
-const int kTogetherMaxChatImageBytes = 120 * 1024;
+/// What the Together Start button is doing right now — the single decision
+/// point for every Start surface (the floating orb, the player hook, the
+/// Together tab). Decided here, in the service, from room facts only, so
+/// the orb, the hook and the tab can never disagree.
+///
+/// * [hidden] — no room: nothing Start-related renders at all.
+/// * [browsing] — a room is open but the host is not in a position to go
+///   live: still browsing/searching, no title picked, no player open, or
+///   the movie is paused/stopped. The orb is just its small neutral pill
+///   ("Enjoy Together") — never a start prompt.
+/// * [ready] — the host has picked a title, a player is open, and the
+///   movie is actually playing. Only now does the compact Start run
+///   button appear.
+/// * [live] — the host pressed Start (or the guest joined a live room):
+///   the Start button is gone for good, replaced by the tiny Live
+///   indicator. It never comes back while live.
+enum TogetherStartState { hidden, browsing, ready, live }
+
+/// What sending a chat photo can end in. The chat panel turns each one
+/// into an honest line — never a silent drop, never a generic failure.
+enum TogetherImageSendResult {
+  /// The photo fit (after shrinking, if it needed it) and its chunks are
+  /// on the wire.
+  sent,
+
+  /// No room, or the relay is not connected right now.
+  notConnected,
+
+  /// The bytes are not a readable JPEG / PNG / WebP / GIF.
+  unreadable,
+
+  /// Even after downscaling to the smallest step the photo is still over
+  /// the 5 MB budget. (An animated GIF over budget lands here too: the
+  /// only way to shrink it would destroy the animation.)
+  tooLarge,
+}
+
+/// Maximum chat image size: 5 MB of raw bytes (2.8.0 — was ~120 KB),
+/// defined in `chat_image_chunks.dart` as [kTogetherMaxChatImageBytes].
+/// A photo travels chunked (see that file): the relay cannot carry a
+/// 5 MB message in one packet, so the bytes are split into 32 KiB chunks
+/// with a SHA-256 integrity check on reassembly. A photo over the budget
+/// is downscaled on-device until it fits; only one that still cannot fit
+/// is refused.
 
 /// How often every member reports its own position (heartbeat), and how
 /// long a host may go quiet before the guest decides it has left.
-const Duration kTogetherHeartbeatInterval = Duration(seconds: 2);
+///
+/// 1 s while a room is open (2.8.0 — was 2 s): the heartbeat is the
+/// backstop that keeps the guest's waiting screen, presence and RTT
+/// measurement live, and a 1 s beat means a lost status push is repaired
+/// within a second. It never carries playback itself — play/pause/seek/
+/// title changes publish their own state immediately (see
+/// [reportLocalPlayback]), so the heartbeat staying cheap matters more
+/// than its exact rate.
+const Duration kTogetherHeartbeatInterval = Duration(seconds: 1);
 const Duration kTogetherHostSilenceTimeout = Duration(seconds: 8);
 
 /// How long a waiting guest gives the host to show any sign of life
 /// (status, heartbeat, presence or retained state) after joining before
 /// the waiting screen says so instead of spinning forever. The host
 /// publishes a status the moment the room is created and a heartbeat every
-/// 2 s, so 30 s of total silence genuinely means the relay or the host is
+/// 1 s, so 30 s of total silence genuinely means the relay or the host is
 /// gone — not that the host is browsing slowly.
 const Duration kTogetherWaitingStaleTimeout = Duration(seconds: 30);
 
@@ -85,8 +134,8 @@ const String kTogetherRelayUnreachableMessage =
 ///
 /// A [ChangeNotifier]: the Together tab and the player hook watch it and
 /// rebuild when the phase, the room state, the chat or the unread badge
-/// changes. Heartbeats deliberately do NOT notify — they arrive every two
-/// seconds and nothing on screen needs them, except the rejoin-adoption
+/// changes. Heartbeats deliberately do NOT notify — they arrive every
+/// second and nothing on screen needs them, except the rejoin-adoption
 /// path, which notifies only when it actually sets a seek target.
 ///
 /// Never logs message contents, room codes or payloads: connection events
@@ -191,6 +240,23 @@ class TogetherService extends ChangeNotifier {
 
   final List<TogetherChatMessage> _messages = <TogetherChatMessage>[];
 
+  /// Chunked images arriving from the other phone, by message id — the
+  /// reassembly state for each photo still missing chunks.
+  final Map<String, _IncomingImageTransfer> _incomingImages =
+      <String, _IncomingImageTransfer>{};
+
+  /// Chunked images this phone sent and the peer has not acked yet, by
+  /// message id — the chunk list is kept so a retry request for missing
+  /// indices can re-publish just those chunks. Entries expire after
+  /// 2 minutes ([_pruneSentImages]).
+  final Map<String, _SentImageTransfer> _sentImages =
+      <String, _SentImageTransfer>{};
+
+  /// Outgoing image transfers still being published, by message id, for
+  /// the sending-progress UI.
+  final Map<String, TogetherImageTransfer> _outgoingTransfers =
+      <String, TogetherImageTransfer>{};
+
   /// Recent peer heartbeats, keyed by sender id. Only the newest per peer
   /// is kept; entries older than 10 s are ignored by adoption.
   final Map<String, HeartbeatSample> _peerHeartbeats = <String, HeartbeatSample>{};
@@ -235,6 +301,12 @@ class TogetherService extends ChangeNotifier {
 
   void registerOrbStartAction(VoidCallback? action) {
     if (_orbStartAction == action) return;
+    // The player closed: the movie is not playing anywhere any more, so
+    // the ready state must not survive on a stale tick. It comes back
+    // only when a player re-opens and reports playing again (see
+    // [reportLocalPlayback]) — that is what makes the Start button vanish
+    // when the host leaves the player without going live.
+    if (action == null) _lastLocalPlaying = false;
     _orbStartAction = action;
     notifyListeners();
   }
@@ -260,6 +332,23 @@ class TogetherService extends ChangeNotifier {
   bool get chatHasUnread => _chatHasUnread;
   TogetherLastRoom? get lastRoom => _lastRoom;
   List<TogetherChatMessage> get messages => List.unmodifiable(_messages);
+
+  /// Image transfers in flight right now — outgoing photos still being
+  /// published and incoming photos still missing chunks — for the chat
+  /// panel's progress rows. A transfer leaves this list the moment it
+  /// completes (the photo is a normal chat message by then) or fails.
+  List<TogetherImageTransfer> get imageTransfers {
+    return List.unmodifiable(<TogetherImageTransfer>[
+      ..._outgoingTransfers.values,
+      for (final transfer in _incomingImages.values)
+        TogetherImageTransfer(
+          messageId: transfer.reassembler.messageId,
+          isOutgoing: false,
+          receivedChunks: transfer.reassembler.receivedCount,
+          totalChunks: transfer.reassembler.totalChunks,
+        ),
+    ]);
+  }
 
   /// Latest live room status, pushed by the host. The guest's waiting
   /// screen renders this — it is a real MQTT fact, never a local guess.
@@ -336,6 +425,40 @@ class TogetherService extends ChangeNotifier {
   /// True once the host has pressed Start (or a guest joined a live room).
   bool get isLive => _phase == TogetherPhase.live;
 
+  /// The engine's actual transport state at the last reported tick: true
+  /// only while the movie is really playing in an open player. Cleared
+  /// when the player closes ([registerOrbStartAction]) and when the room
+  /// is reset, so a stale tick can never conjure a Start button.
+  bool get isLocallyPlaying => _lastLocalPlaying;
+
+  /// True while a player is open — i.e. the player hook has registered
+  /// its `goLive` on the service. Without a player there is no engine to
+  /// go live from, so there is no Start button either.
+  bool get isPlayerOpen => _orbStartAction != null;
+
+  /// The Start-button state machine ([TogetherStartState]): the one place
+  /// the decision is made. Browsing shows only the neutral orb pill;
+  /// `ready` needs all four at once — host, pending room, a picked title,
+  /// an open player, and the movie actually playing; `live` means the
+  /// button is gone, replaced by the Live indicator.
+  TogetherStartState get startState {
+    if (!isSessionActive) return TogetherStartState.hidden;
+    if (isLive) return TogetherStartState.live;
+    if (_role == TogetherRole.host &&
+        _phase == TogetherPhase.pendingHost &&
+        _pendingMedia != null &&
+        _orbStartAction != null &&
+        _lastLocalPlaying) {
+      return TogetherStartState.ready;
+    }
+    return TogetherStartState.browsing;
+  }
+
+  /// True only in [TogetherStartState.ready]: the compact Start run
+  /// button may render. Every Start surface reads this, never its own
+  /// copy of the conditions.
+  bool get showStartButton => startState == TogetherStartState.ready;
+
   bool get isConnected =>
       _client?.connectionStatus?.state == MqttConnectionState.connected;
 
@@ -355,6 +478,21 @@ class TogetherService extends ChangeNotifier {
   }
 
   // ---- Test seams ----
+
+  /// Test-only transport tap: when set, every JSON publish that would go
+  /// to the room topic is also handed to this sink ([_publishToRoom]),
+  /// and [_canPublish] is true even with no live relay — so tests can
+  /// verify exactly what the host publishes (state on seek/pause, chunk
+  /// sequences, retry requests) without a broker. Never set in
+  /// production; production publishing is unchanged (sink null means
+  /// "connected to the relay" is the only way to publish).
+  @visibleForTesting
+  void Function(Map<String, dynamic> json, {bool retain})?
+  debugPublishSinkForTest;
+
+  /// True when a publish can actually leave this phone: connected to the
+  /// relay, or (tests only) the debug sink is attached.
+  bool get _canPublish => isConnected || debugPublishSinkForTest != null;
 
   /// Enters a room without touching the relay: host lands in
   /// [TogetherPhase.pendingHost], guest in [TogetherPhase.waitingGuest].
@@ -647,11 +785,21 @@ class TogetherService extends ChangeNotifier {
     _pendingMedia = null;
     _error = null;
     _hostGone = false;
+    // A fresh room starts with nothing playing: a stale tick from the
+    // previous room must never make a Start button appear before the new
+    // movie actually plays.
+    _lastLocalPlaying = false;
     _chatHasUnread = false;
     _chatPanelOpen = false;
     _roomStatus = TogetherRoomStatus.hostBrowsing;
     _hostClientId = null;
     _presentMembers.clear();
+    for (final transfer in _incomingImages.values) {
+      transfer.retryTimer?.cancel();
+    }
+    _incomingImages.clear();
+    _sentImages.clear();
+    _outgoingTransfers.clear();
     _reconnecting = false;
     _reconnectAttempt = 0;
     _connectedRelayLabel = null;
@@ -733,26 +881,48 @@ class TogetherService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Called by the player hook on every engine tick. The host publishes on
-  /// play/pause flips, on seeks, and at most once a second while playing;
-  /// a guest only records its own position for the rejoin snapshot.
+  /// Called by the player hook on every engine tick. The host publishes
+  /// IMMEDIATELY on every action — a play/pause flip, a seek, a title
+  /// change (see [attachMedia]) — never waiting for the next heartbeat:
+  /// the guest's mirror of a host action is one relay round-trip away,
+  /// not a heartbeat away. Between actions, a playing host re-publishes
+  /// at most once a second as a steady-state tick; a paused host with no
+  /// change publishes nothing at all. A guest only records its own
+  /// position for the rejoin snapshot.
   void reportLocalPlayback({
     required int positionMs,
     required int durationMs,
     required bool playing,
   }) {
-    final positionChanged = (positionMs - _lastLocalPositionMs).abs() > 2000;
+    // A seek is a position jump the clock cannot explain: backwards at
+    // all, any move while paused (nothing advances a paused clock), or a
+    // forward jump bigger than one engine tick could produce at normal
+    // speed (ticks arrive ~4×/s, so ~250 ms per tick at 1×; 1000 ms of
+    // slack covers 2× speed and a missed tick without mistaking normal
+    // playback for a seek).
+    final deltaMs = positionMs - _lastLocalPositionMs;
+    final isSeek = !playing
+        ? deltaMs != 0
+        : deltaMs < 0 || deltaMs > 1000;
     _lastLocalPositionMs = positionMs;
     _lastLocalDurationMs = durationMs;
     final playingFlipped = playing != _lastLocalPlaying;
     _lastLocalPlaying = playing;
+    // A play/pause flip while the host is still pending IS the Start
+    // button appearing / vanishing: the orb must rebuild for it, even
+    // though nothing is published to the relay yet.
+    if (playingFlipped &&
+        _role == TogetherRole.host &&
+        _phase == TogetherPhase.pendingHost) {
+      notifyListeners();
+    }
     if (_role != TogetherRole.host || _phase != TogetherPhase.live) return;
-    if (!isConnected) return;
+    if (!_canPublish) return;
     final now = DateTime.now();
     final due =
         _lastPublishedAt == null ||
         now.difference(_lastPublishedAt!).inMilliseconds >= 1000;
-    if (playingFlipped || positionChanged || (playing && due)) {
+    if (playingFlipped || isSeek || (playing && due)) {
       _publishState(force: true);
     }
     // A play/pause flip is a status change too (playing <-> paused) — the
@@ -768,7 +938,7 @@ class TogetherService extends ChangeNotifier {
   }) {
     final media = _pendingMedia ?? _roomState?.media;
     final topic = _otp == null ? null : togetherTopicFor(_otp!);
-    if (media == null || topic == null || !isConnected) return;
+    if (media == null || topic == null || !_canPublish) return;
     final pos = positionMs ?? _lastLocalPositionMs;
     final dur = durationMs ?? _lastLocalDurationMs;
     final isPlaying = playing ?? _lastLocalPlaying;
@@ -817,7 +987,7 @@ class TogetherService extends ChangeNotifier {
   /// flips — never on a timer, so the wire stays quiet while nothing
   /// changes and the guest still learns every change within a heartbeat.
   void _maybePublishStatus() {
-    if (_role != TogetherRole.host || !isConnected) return;
+    if (_role != TogetherRole.host || !_canPublish) return;
     final status = _deriveHostStatus();
     if (status == _lastPublishedStatus) return;
     _publishStatus(status);
@@ -827,7 +997,7 @@ class TogetherService extends ChangeNotifier {
   /// Used on create / rejoin, where the guest is waiting on this exact
   /// message, and when answering a guest's presence `joined`.
   void _publishStatusNow() {
-    if (_role != TogetherRole.host || !isConnected) return;
+    if (_role != TogetherRole.host || !_canPublish) return;
     _publishStatus(_deriveHostStatus());
   }
 
@@ -846,7 +1016,7 @@ class TogetherService extends ChangeNotifier {
 
   /// Records [senderId] as present in [role] and clears the waiting-stale
   /// flag when the traffic is from the host. Notifies only when a member
-  /// is actually new — heartbeats call this every 2 s and must not
+  /// is actually new — heartbeats call this every 1 s and must not
   /// rebuild the room on every beat.
   void _notePeerPresent(String senderId, String role) {
     final isNew = _presentMembers[senderId] != role;
@@ -924,24 +1094,160 @@ class TogetherService extends ChangeNotifier {
     });
   }
 
-  /// Sends a photo from the gallery/camera roll. Downscales to a small
-  /// image first; returns false (and sends nothing) when the photo is still
-  /// over the ~120 KB budget — the UI then tells the viewer to pick a
-  /// smaller photo instead of breaking the room.
-  Future<bool> sendChatImage(Uint8List bytes) async {
-    if (!isSessionActive || !isConnected) return false;
-    final shrunk = await _downscaleImage(bytes);
-    if (shrunk == null || shrunk.length > kTogetherMaxChatImageBytes) {
-      return false;
+  /// Sends a photo from the gallery/camera roll — up to 5 MB (2.8.0,
+  /// was ~120 KB), JPEG / PNG / WebP / GIF.
+  ///
+  /// * A photo within budget is sent exactly as picked: no quality loss,
+  ///   and a GIF keeps its animation.
+  /// * A photo over budget is downscaled on-device (stepwise, re-encoded
+  ///   as PNG) until it fits; only one that still cannot fit is refused
+  ///   ([TogetherImageSendResult.tooLarge]). An animated GIF over budget
+  ///   is refused rather than silently flattened to a still — the only
+  ///   way to shrink it would destroy the animation.
+  /// * The bytes travel CHUNKED (see `chat_image_chunks.dart`): 32 KiB
+  ///   pieces with a SHA-256 integrity check, so the public relay never
+  ///   sees a 5 MB packet. The sender's bubble appears at once (local
+  ///   echo) with a sending-progress row while the chunks go out; the
+  ///   receiver reassembles, verifies, and only then shows the photo.
+  Future<TogetherImageSendResult> sendChatImage(
+    Uint8List bytes, {
+    String? replyToId,
+    String? replyToText,
+  }) async {
+    if (!isSessionActive || !_canPublish) {
+      return TogetherImageSendResult.notConnected;
     }
-    final message = _buildMessage(imageBase64: base64Encode(shrunk));
+    if (bytes.isEmpty) return TogetherImageSendResult.unreadable;
+    final fitted = await _fitImageToBudget(bytes);
+    if (fitted == null) {
+      // Not an image at all vs. a real image that would not shrink
+      // enough: the panel tells the user which one it was.
+      return detectImageFormat(bytes) == TogetherImageFormat.unknown
+          ? TogetherImageSendResult.unreadable
+          : TogetherImageSendResult.tooLarge;
+    }
+    final message = _buildMessage(
+      imageBase64: base64Encode(fitted),
+      replyToId: replyToId,
+      replyToText: replyToText,
+    );
     _messages.add(message);
     notifyListeners();
-    _publishToRoom(<String, dynamic>{
-      'kind': 'chat',
-      ...message.toJson(),
-    });
-    return true;
+    await _publishImageChunks(message: message, bytes: fitted);
+    return TogetherImageSendResult.sent;
+  }
+
+  /// Publishes [bytes] as a chunked image message, keeping the chunk list
+  /// so a retry request from the peer can re-publish just the missing
+  /// pieces. Progress is exposed through [imageTransfers] while sending.
+  Future<void> _publishImageChunks({
+    required TogetherChatMessage message,
+    required Uint8List bytes,
+  }) async {
+    final chunks = splitImageIntoChunks(
+      bytes: bytes,
+      messageId: message.id,
+      senderId: clientId,
+      timestampMs: message.timestampMs,
+      replyToId: message.replyToId,
+      replyToText: message.replyToText,
+    );
+    if (chunks.isEmpty) return;
+    _pruneSentImages();
+    _sentImages[message.id] = _SentImageTransfer(
+      messageId: message.id,
+      chunks: chunks,
+      sentAt: DateTime.now(),
+    );
+    _outgoingTransfers[message.id] = TogetherImageTransfer(
+      messageId: message.id,
+      isOutgoing: true,
+      receivedChunks: 0,
+      totalChunks: chunks.length,
+    );
+    notifyListeners();
+    for (var i = 0; i < chunks.length; i++) {
+      _publishToRoom(chunks[i].toJson());
+      // Progress, throttled to 5% steps: a 5 MB photo is ~160 chunks,
+      // and the chat must not rebuild 160 times for one send.
+      final progress = (i + 1) / chunks.length;
+      final shown = _outgoingTransfers[message.id];
+      if (shown != null &&
+          (progress - shown.progress >= 0.05 || i == chunks.length - 1)) {
+        _outgoingTransfers[message.id] = TogetherImageTransfer(
+          messageId: message.id,
+          isOutgoing: true,
+          receivedChunks: i + 1,
+          totalChunks: chunks.length,
+        );
+        notifyListeners();
+      }
+      // Pace chunk publishes: the public relay drops rapid bursts (see
+      // [kTogetherChatChunkPublishGap]) — a 1 MB photo takes ~8 s to send
+      // with progress shown, instead of arriving with holes. Skipped for
+      // the test sink, which is not a real broker, so unit tests stay fast.
+      if (i < chunks.length - 1 && debugPublishSinkForTest == null) {
+        await Future<void>.delayed(kTogetherChatChunkPublishGap);
+      }
+    }
+    _outgoingTransfers.remove(message.id);
+    notifyListeners();
+    // The retained chunk list lives until the peer acks (or 2 minutes
+    // pass): a retry request that arrives after the send finished still
+    // gets its missing chunks.
+  }
+
+  /// Fits [bytes] to the 5 MB budget: within budget and a known format,
+  /// the original bytes go untouched; over budget, decode and shrink
+  /// stepwise (PNG re-encode) until it fits; null when it cannot be read
+  /// as an image at all, or still will not fit at the smallest step.
+  Future<Uint8List?> _fitImageToBudget(Uint8List bytes) async {
+    final format = detectImageFormat(bytes);
+    if (bytes.length <= kTogetherMaxChatImageBytes) {
+      if (format != TogetherImageFormat.unknown) return bytes;
+      // Small but unrecognised: it may still be a decodable image (e.g.
+      // BMP) — fall through to the decode path, which re-encodes as PNG.
+    } else if (format == TogetherImageFormat.gif) {
+      // Animated GIF over budget: shrinking would flatten it to a still.
+      return null;
+    }
+    // Over budget (or an unknown-but-decodable format): each step roughly
+    // quarters the pixel count, so photographic images land well under
+    // budget long before the smallest step. PNG is the only compressed
+    // re-encode dart:ui offers.
+    for (final longSide in const <int>[2048, 1600, 1280, 1024, 800, 640, 480]) {
+      final shrunk = await _downscaleImage(bytes, longSide: longSide);
+      if (shrunk != null && shrunk.length <= kTogetherMaxChatImageBytes) {
+        return shrunk;
+      }
+    }
+    return null;
+  }
+
+  /// Drops entries older than 2 minutes from the retained sent-image
+  /// store: a peer that slow has long since given up asking.
+  void _pruneSentImages() {
+    final cutoff = DateTime.now().subtract(const Duration(seconds: 120));
+    _sentImages.removeWhere((_, sent) => sent.sentAt.isBefore(cutoff));
+  }
+
+  /// Downscales [bytes] so its width is at most [longSide] and re-encodes
+  /// as PNG. Returns null when the bytes are not a decodable image.
+  Future<Uint8List?> _downscaleImage(
+    Uint8List bytes, {
+    required int longSide,
+  }) async {
+    try {
+      final codec = await ui.instantiateImageCodec(
+        bytes,
+        targetWidth: longSide,
+      );
+      final frame = await codec.getNextFrame();
+      final data = await frame.image.toByteData(format: ui.ImageByteFormat.png);
+      return data?.buffer.asUint8List();
+    } catch (_) {
+      return null;
+    }
   }
 
   TogetherChatMessage _buildMessage({
@@ -961,22 +1267,6 @@ class TogetherService extends ChangeNotifier {
       replyToText: replyToText,
       timestampMs: DateTime.now().millisecondsSinceEpoch,
     );
-  }
-
-  /// Downscales [bytes] to at most 640 px on the long side and re-encodes
-  /// as PNG. Returns null when the bytes are not a decodable image.
-  Future<Uint8List?> _downscaleImage(Uint8List bytes) async {
-    try {
-      final codec = await ui.instantiateImageCodec(
-        bytes,
-        targetWidth: 640,
-      );
-      final frame = await codec.getNextFrame();
-      final data = await frame.image.toByteData(format: ui.ImageByteFormat.png);
-      return data?.buffer.asUint8List();
-    } catch (_) {
-      return null;
-    }
   }
 
   // ---- Relay connection ----
@@ -1196,6 +1486,12 @@ class TogetherService extends ChangeNotifier {
   }
 
   void _publish(String topic, Map<String, dynamic> json, {bool retain = false}) {
+    // Test tap: captures the publish even with no live relay (see
+    // [debugPublishSinkForTest]). The real publish below still no-ops
+    // offline — the sink never replaces the relay. This sits here, not
+    // in [_publishToRoom], because the playback state publishes straight
+    // through [_publish] and must be captured too.
+    debugPublishSinkForTest?.call(json, retain: retain);
     _publishRaw(
       topic,
       Uint8List.fromList(utf8.encode(jsonEncode(json))),
@@ -1248,7 +1544,7 @@ class TogetherService extends ChangeNotifier {
     final senderId = json['senderId'] as String?;
     // Own heartbeat, echoed back by the broker (we subscribe to our own
     // topic): its `timestampMs` is when we sent it, so the gap is the
-    // real MQTT round-trip. Measured every heartbeat (2 s), never guessed.
+    // real MQTT round-trip. Measured every heartbeat (1 s), never guessed.
     if (senderId == clientId && kind == 'heartbeat') {
       final sentMs = (json['timestampMs'] as num?)?.toInt();
       if (sentMs != null) {
@@ -1265,6 +1561,12 @@ class TogetherService extends ChangeNotifier {
         _handleState(json);
       case 'chat':
         _handleChat(json);
+      case 'chat-image-chunk':
+        _handleImageChunk(json);
+      case 'chat-image-request':
+        unawaited(_handleImageRequest(json));
+      case 'chat-image-ack':
+        _handleImageAck(json);
       case 'heartbeat':
         _handleHeartbeat(json);
       case 'bye':
@@ -1277,12 +1579,12 @@ class TogetherService extends ChangeNotifier {
   }
 
   /// Records a measured round-trip. Notifies only on the first
-  /// measurement or a change of 100 ms or more — heartbeats arrive every
-  /// 2 s and must not rebuild the room on every beat for a few ms of jitter.
+  /// measurement or a change of 50 ms or more — heartbeats arrive every
+  /// 1 s and must not rebuild the room on every beat for a few ms of jitter.
   void _noteRoundTrip(int rttMs) {
     final previous = _roundTripMs;
     _roundTripMs = rttMs;
-    if (previous == null || (rttMs - previous).abs() >= 100) {
+    if (previous == null || (rttMs - previous).abs() >= 50) {
       notifyListeners();
     }
   }
@@ -1326,9 +1628,13 @@ class TogetherService extends ChangeNotifier {
       _notePeerPresent(event.senderId, event.role);
       // A guest just joined: answer with a fresh status publish so the
       // guest learns what the host is doing right now instead of waiting
-      // for the next heartbeat or status change.
+      // for the next heartbeat or status change — and, when the room is
+      // already live, an immediate retained-state publish too, so the
+      // guest resyncs to the exact live position at once instead of
+      // waiting for the next 1 s state tick.
       if (_role == TogetherRole.host && event.role == TogetherRole.guest.name) {
         _publishStatusNow();
+        if (_phase == TogetherPhase.live) _publishState(force: true);
       }
     } else {
       _presentMembers.remove(event.senderId);
@@ -1356,12 +1662,24 @@ class TogetherService extends ChangeNotifier {
     _lastSeenSequence = state.sequence;
     final wasWaiting = _phase == TogetherPhase.waitingGuest;
     // Notify only on something the UI can see: a phase change, a new title,
-    // or a play/pause flip. The position itself ticks once a second and the
-    // player hook reads it straight off the service — notifying for it
-    // would rebuild the player screen every second for nothing.
+    // a play/pause flip, or a SEEK-sized jump — a jump is a host action
+    // the guest's hook must apply at once (see TogetherPlayerHook), not at
+    // the next throttled evaluation. The position itself ticks once a
+    // second and the player hook reads it straight off the service —
+    // notifying for it would rebuild the player screen every second for
+    // nothing. A jump is measured against where the previous state said
+    // the host would be now, so ordinary playback advance (which the
+    // target math already accounts for) never counts as a jump.
     final previous = _roomState;
     final mediaChanged = previous?.media != state.media;
     final playingFlipped = previous?.playing != state.playing;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final seekJump =
+        previous != null &&
+        (state.targetPositionMs(nowMs: nowMs) -
+                    previous.targetPositionMs(nowMs: nowMs))
+                .abs() >
+            kSyncSeekThresholdMs;
     _roomState = state;
     _pendingMedia ??= state.media;
     _notePeerPresent(state.hostId, TogetherRole.host.name);
@@ -1377,7 +1695,9 @@ class TogetherService extends ChangeNotifier {
       _adoptRejoinFromState(state);
     }
     _armHostSilenceTimer();
-    if (wasWaiting || mediaChanged || playingFlipped) notifyListeners();
+    if (wasWaiting || mediaChanged || playingFlipped || seekJump) {
+      notifyListeners();
+    }
   }
 
   void _handleChat(Map<String, dynamic> json) {
@@ -1406,6 +1726,196 @@ class TogetherService extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ---- Chunked chat images (receive side) ----
+
+  /// One incoming chunk of a photo. Chunks may arrive out of order and
+  /// twice (QoS 1); the reassembler dedupes by index and the photo is
+  /// delivered only when every chunk is in AND the SHA-256 matches — a
+  /// partial or corrupt transfer is never shown. When the last chunk
+  /// arrives with pieces still missing, the missing indices are requested
+  /// at once instead of waiting for the retry timer; the timer (5 s after
+  /// the last chunk seen) covers the case where the last chunk itself
+  /// never arrives.
+  void _handleImageChunk(Map<String, dynamic> json) {
+    TogetherImageChunk chunk;
+    try {
+      chunk = TogetherImageChunk.fromJson(json);
+    } catch (_) {
+      return;
+    }
+    if (chunk.messageId.isEmpty ||
+        chunk.senderId.isEmpty ||
+        chunk.senderId == clientId) {
+      return;
+    }
+    if (chunk.totalChunks <= 0 ||
+        chunk.totalBytes <= 0 ||
+        chunk.totalBytes > kTogetherMaxChatImageBytes ||
+        chunk.sha256Hex.isEmpty) {
+      return;
+    }
+    // Already delivered (the sender's retry re-publish racing the ack).
+    if (_messages.any((m) => m.id == chunk.messageId)) return;
+    var transfer = _incomingImages[chunk.messageId];
+    transfer ??= _incomingImages[chunk.messageId] = _IncomingImageTransfer(
+      reassembler: TogetherImageReassembler(
+        messageId: chunk.messageId,
+        totalChunks: chunk.totalChunks,
+        totalBytes: chunk.totalBytes,
+        sha256Hex: chunk.sha256Hex,
+      ),
+      senderId: chunk.senderId,
+      timestampMs: chunk.timestampMs,
+      replyToId: chunk.replyToId,
+      replyToText: chunk.replyToText,
+    );
+    // A chunk that disagrees with the transfer's announced shape is a
+    // different send reusing an id — drop it, never mix two photos.
+    if (transfer.reassembler.totalChunks != chunk.totalChunks ||
+        transfer.reassembler.totalBytes != chunk.totalBytes) {
+      return;
+    }
+    transfer.reassembler.addChunk(chunk);
+    _armImageRetryTimer(transfer);
+    final assembled = transfer.reassembler.tryAssemble();
+    if (assembled != null) {
+      _completeIncomingImage(transfer, assembled);
+      return;
+    }
+    // Receiving progress, throttled to 5% steps so a 160-chunk photo
+    // does not rebuild the chat panel 160 times.
+    final progress =
+        transfer.reassembler.receivedCount / transfer.reassembler.totalChunks;
+    if (progress - transfer.lastNotifiedProgress >= 0.05) {
+      transfer.lastNotifiedProgress = progress;
+      notifyListeners();
+    }
+    if (chunk.chunkIndex == chunk.totalChunks - 1) {
+      _requestMissingImageChunks(transfer);
+    }
+  }
+
+  /// Delivers a fully reassembled, integrity-checked photo as a normal
+  /// chat message, and acks it so the sender drops its retained copy.
+  void _completeIncomingImage(
+    _IncomingImageTransfer transfer,
+    Uint8List bytes,
+  ) {
+    transfer.retryTimer?.cancel();
+    _incomingImages.remove(transfer.reassembler.messageId);
+    final message = TogetherChatMessage(
+      id: transfer.reassembler.messageId,
+      senderId: transfer.senderId,
+      senderLabel: 'Friend',
+      imageBase64: base64Encode(bytes),
+      replyToId: transfer.replyToId,
+      replyToText: transfer.replyToText,
+      timestampMs: transfer.timestampMs,
+    );
+    _messages.add(message);
+    if (!_chatPanelOpen) _chatHasUnread = true;
+    _publishToRoom(<String, dynamic>{
+      'kind': 'chat-image-ack',
+      'messageId': message.id,
+      'senderId': clientId,
+      'timestampMs': DateTime.now().millisecondsSinceEpoch,
+    });
+    notifyListeners();
+  }
+
+  /// Gives up on a photo after 3 unanswered retry requests (~15–20 s):
+  /// the transfer is dropped and the room sees an honest line instead of
+  /// a photo that never arrives.
+  void _failIncomingImage(_IncomingImageTransfer transfer) {
+    transfer.retryTimer?.cancel();
+    _incomingImages.remove(transfer.reassembler.messageId);
+    _messages.add(
+      TogetherChatMessage(
+        id: '${transfer.reassembler.messageId}-failed',
+        senderId: transfer.senderId,
+        senderLabel: 'Friend',
+        text: 'Photo couldn’t be received completely — please send it again.',
+        timestampMs: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    if (!_chatPanelOpen) _chatHasUnread = true;
+    notifyListeners();
+  }
+
+  /// Arms (or re-arms) the 5 s retry timer: 5 s after the last chunk seen
+  /// with pieces still missing, ask for them. Re-armed on every chunk,
+  /// so a slow-but-moving transfer is never asked twice for the same gap.
+  void _armImageRetryTimer(_IncomingImageTransfer transfer) {
+    transfer.retryTimer?.cancel();
+    transfer.retryTimer = Timer(const Duration(seconds: 5), () {
+      if (_disposed) return;
+      if (!_incomingImages.containsKey(transfer.reassembler.messageId)) {
+        return;
+      }
+      if (transfer.reassembler.isComplete) return;
+      _requestMissingImageChunks(transfer);
+      if (_incomingImages.containsKey(transfer.reassembler.messageId)) {
+        _armImageRetryTimer(transfer);
+      }
+    });
+  }
+
+  /// Asks the sender to re-publish just the missing indices (at most
+  /// 3 requests per transfer — after that [_failIncomingImage] ends it).
+  void _requestMissingImageChunks(_IncomingImageTransfer transfer) {
+    final missing = transfer.reassembler.missingIndices;
+    if (missing.isEmpty) return;
+    if (transfer.requestsSent >= 3) {
+      _failIncomingImage(transfer);
+      return;
+    }
+    transfer.requestsSent += 1;
+    _publishToRoom(<String, dynamic>{
+      'kind': 'chat-image-request',
+      'messageId': transfer.reassembler.messageId,
+      'senderId': clientId,
+      'missing': missing,
+      'timestampMs': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  /// The peer is missing pieces of a photo this phone sent: re-publish
+  /// exactly those chunks from the retained copy — never the whole image.
+  /// Paced like the initial send ([kTogetherChatChunkPublishGap]): a
+  /// burst of re-published chunks hits the same relay burst-loss.
+  Future<void> _handleImageRequest(Map<String, dynamic> json) async {
+    final messageId = json['messageId'] as String?;
+    final senderId = json['senderId'] as String?;
+    if (messageId == null ||
+        messageId.isEmpty ||
+        senderId == null ||
+        senderId == clientId) {
+      return;
+    }
+    final sent = _sentImages[messageId];
+    if (sent == null) return;
+    _pruneSentImages();
+    final missing =
+        (json['missing'] as List?)
+            ?.map((e) => (e as num).toInt())
+            .where((i) => i >= 0 && i < sent.chunks.length)
+            .toList() ??
+        const <int>[];
+    for (var i = 0; i < missing.length; i++) {
+      _publishToRoom(sent.chunks[missing[i]].toJson());
+      if (i < missing.length - 1 && debugPublishSinkForTest == null) {
+        await Future<void>.delayed(kTogetherChatChunkPublishGap);
+      }
+    }
+  }
+
+  /// The peer finished a photo: drop the retained chunk list.
+  void _handleImageAck(Map<String, dynamic> json) {
+    final messageId = json['messageId'] as String?;
+    if (messageId == null) return;
+    _sentImages.remove(messageId);
+  }
+
   void _handleHeartbeat(Map<String, dynamic> json) {
     final senderId = json['senderId'] as String?;
     final positionMs = (json['positionMs'] as num?)?.toInt();
@@ -1418,7 +1928,7 @@ class TogetherService extends ChangeNotifier {
       receivedAtMs: now,
     );
     // A heartbeat is presence too: if the guest's `joined` was lost, the
-    // host still learns the guest is in the room within 2 s.
+    // host still learns the guest is in the room within 1 s.
     if (_role == TogetherRole.host) {
       _notePeerPresent(senderId, TogetherRole.guest.name);
     }
@@ -1432,7 +1942,7 @@ class TogetherService extends ChangeNotifier {
     if (_role == TogetherRole.guest) {
       _notePeerPresent(senderId, TogetherRole.host.name);
       // The host's heartbeat repeats its current status (and picked title)
-      // so a guest that missed the status push still learns it within 2 s.
+      // so a guest that missed the status push still learns it within 1 s.
       final status = TogetherRoomStatus.fromWire(json['status'] as String?);
       if (status != null && status != _roomStatus) {
         _roomStatus = status;
@@ -1557,7 +2067,54 @@ class TogetherService extends ChangeNotifier {
     _persistTimer?.cancel();
     _reconnectTimer?.cancel();
     _waitingStaleTimer?.cancel();
+    for (final transfer in _incomingImages.values) {
+      transfer.retryTimer?.cancel();
+    }
+    _incomingImages.clear();
     _disconnect();
     super.dispose();
   }
+}
+
+/// One photo arriving in chunks: the reassembler plus the bookkeeping
+/// around it (who sent it, how many retries have been asked for, the
+/// 5 s retry timer, and where the progress bar last stopped so the UI
+/// is not rebuilt per chunk).
+class _IncomingImageTransfer {
+  _IncomingImageTransfer({
+    required this.reassembler,
+    required this.senderId,
+    required this.timestampMs,
+    this.replyToId,
+    this.replyToText,
+  });
+
+  final TogetherImageReassembler reassembler;
+  final String senderId;
+  final int timestampMs;
+  final String? replyToId;
+  final String? replyToText;
+
+  /// Retry requests sent so far (max 3, then the transfer fails).
+  int requestsSent = 0;
+
+  /// Fires 5 s after the last chunk seen; re-armed on every chunk.
+  Timer? retryTimer;
+
+  /// Last progress fraction the UI was told about (5% throttle).
+  double lastNotifiedProgress = 0;
+}
+
+/// One photo this phone sent: the chunk list, kept until the peer acks
+/// (or 2 minutes pass) so missing chunks can be re-published on request.
+class _SentImageTransfer {
+  _SentImageTransfer({
+    required this.messageId,
+    required this.chunks,
+    required this.sentAt,
+  });
+
+  final String messageId;
+  final List<TogetherImageChunk> chunks;
+  final DateTime sentAt;
 }

@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import '../../../../core/theme/design_tokens.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/utils/layout_constants.dart';
@@ -156,7 +157,7 @@ class _UnifiedFilterDialogState extends ConsumerState<UnifiedFilterDialog>
                                           width: 8,
                                           height: 8,
                                           decoration: const BoxDecoration(
-                                            color: Colors.redAccent,
+                                            color: YumeDesign.accent,
                                             shape: BoxShape.circle,
                                           ),
                                         ),
@@ -189,7 +190,7 @@ class _UnifiedFilterDialogState extends ConsumerState<UnifiedFilterDialog>
                                           width: 8,
                                           height: 8,
                                           decoration: const BoxDecoration(
-                                            color: Colors.redAccent,
+                                            color: YumeDesign.accent,
                                             shape: BoxShape.circle,
                                           ),
                                         ),
@@ -220,7 +221,7 @@ class _UnifiedFilterDialogState extends ConsumerState<UnifiedFilterDialog>
                                           width: 8,
                                           height: 8,
                                           decoration: const BoxDecoration(
-                                            color: Colors.redAccent,
+                                            color: YumeDesign.accent,
                                             shape: BoxShape.circle,
                                           ),
                                         ),

@@ -7,7 +7,7 @@ import 'package:yumeflix/features/together/sync_math.dart';
 
 void main() {
   group('decideSync', () {
-    test('in sync within the 300 ms jitter band', () {
+    test('in sync within the 150 ms jitter band', () {
       final decision = decideSync(
         localPositionMs: 60_000,
         hostPositionMs: 60_000,
@@ -21,10 +21,10 @@ void main() {
       expect(decision.rate, 1.0);
     });
 
-    test('nudges the rate for a 300–1500 ms drift instead of seeking', () {
+    test('nudges the rate for a 150–750 ms drift instead of seeking', () {
       final behind = decideSync(
         localPositionMs: 60_000,
-        hostPositionMs: 60_800,
+        hostPositionMs: 60_500,
         hostTimestampMs: 1_000_000,
         nowMs: 1_000_000,
         hostPlaying: false,
@@ -32,10 +32,10 @@ void main() {
       );
       expect(behind.action, SyncAction.nudgeFaster);
       expect(behind.rate, 1.05);
-      expect(behind.targetPositionMs, 60_800);
+      expect(behind.targetPositionMs, 60_500);
 
       final ahead = decideSync(
-        localPositionMs: 61_000,
+        localPositionMs: 60_700,
         hostPositionMs: 60_200,
         hostTimestampMs: 1_000_000,
         nowMs: 1_000_000,
@@ -46,17 +46,17 @@ void main() {
       expect(ahead.rate, 0.95);
     });
 
-    test('seeks when drift is over 1500 ms', () {
+    test('seeks when drift is over 750 ms', () {
       final decision = decideSync(
         localPositionMs: 60_000,
-        hostPositionMs: 65_000,
+        hostPositionMs: 61_000,
         hostTimestampMs: 1_000_000,
         nowMs: 1_000_000,
         hostPlaying: false,
         durationMs: 600_000,
       );
       expect(decision.action, SyncAction.seek);
-      expect(decision.targetPositionMs, 65_000);
+      expect(decision.targetPositionMs, 61_000);
       expect(decision.rate, 1.0);
     });
 
@@ -109,10 +109,10 @@ void main() {
       expect(negative.targetPositionMs, 0);
     });
 
-    test('boundary: exactly 300 ms nudges, exactly 1500 ms does not seek', () {
+    test('boundary: exactly 150 ms nudges, exactly 750 ms does not seek', () {
       final atNudge = decideSync(
         localPositionMs: 60_000,
-        hostPositionMs: 60_300,
+        hostPositionMs: 60_150,
         hostTimestampMs: 1_000_000,
         nowMs: 1_000_000,
         hostPlaying: false,
@@ -122,7 +122,7 @@ void main() {
 
       final atSeekEdge = decideSync(
         localPositionMs: 60_000,
-        hostPositionMs: 61_500,
+        hostPositionMs: 60_750,
         hostTimestampMs: 1_000_000,
         nowMs: 1_000_000,
         hostPlaying: false,

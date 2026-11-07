@@ -6,23 +6,25 @@ import 'dart:math';
 /// in isolation. Everything here is arithmetic on milliseconds; the caller
 /// owns clocks, timers and the engine.
 ///
-/// The sync contract, in one place:
+/// The sync contract, in one place (2.8.0 — tightened: a 1.5 s seek
+/// threshold let the guest sit visibly out of sync for over a second, and
+/// a 300 ms nudge band ignored drift the viewer could already feel):
 /// * the host is the only clock that matters — a guest never publishes a
 ///   state of its own, it only chases the host's;
-/// * drift under 300 ms is "in sync" (network jitter, not worth touching);
-/// * drift of 300–1500 ms is fixed by nudging the playback rate a touch
+/// * drift under 150 ms is "in sync" (network jitter, not worth touching);
+/// * drift of 150–750 ms is fixed by nudging the playback rate a touch
 ///   (inaudible, no visible jump);
-/// * drift over 1500 ms is fixed by seeking — a jump that far is already
+/// * drift over 750 ms is fixed by seeking — a jump that far is already
 ///   noticeable, so landing exactly beats gliding.
 /// * when the host is paused there is no clock to chase: the target is the
-///   host's frozen position, and only a seek can fix a gap over 1500 ms.
+///   host's frozen position, and only a seek can fix a gap over 750 ms.
 
 /// Seek when the guest is further than this from where the host is.
-const int kSyncSeekThresholdMs = 1500;
+const int kSyncSeekThresholdMs = 750;
 
 /// Nudge the rate when the drift is at least this, but below the seek
 /// threshold. Smaller than this is jitter — leave the engine alone.
-const int kSyncNudgeThresholdMs = 300;
+const int kSyncNudgeThresholdMs = 150;
 
 /// How far the rate moves for a nudge: 5% faster to catch up, 5% slower to
 /// fall back. Small enough to be inaudible on dialogue.

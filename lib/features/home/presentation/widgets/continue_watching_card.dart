@@ -416,7 +416,7 @@ class _ContinueWatchingCardState extends ConsumerState<ContinueWatchingCard> {
                                 vertical: 2,
                               ),
                               decoration: BoxDecoration(
-                                color: Colors.red.withValues(alpha: 0.20),
+                                color: YumeDesign.accent.withValues(alpha: 0.20),
                                 borderRadius: BorderRadius.circular(
                                   LayoutConstants.radiusSm,
                                 ),
@@ -424,7 +424,7 @@ class _ContinueWatchingCardState extends ConsumerState<ContinueWatchingCard> {
                               child: const Text(
                                 'LIVE',
                                 style: TextStyle(
-                                  color: Colors.red,
+                                  color: YumeDesign.accentLight,
                                   fontSize: 10,
                                   fontWeight: FontWeight.bold,
                                   letterSpacing: 0.5,

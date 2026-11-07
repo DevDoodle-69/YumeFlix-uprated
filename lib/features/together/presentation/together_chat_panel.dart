@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../chat_image_chunks.dart';
 import '../models.dart';
 import '../together_service.dart';
 
@@ -13,7 +14,11 @@ import '../together_service.dart';
 ///
 /// Text, a quick-emoji row (system keyboard emoji via the normal keyboard —
 /// no heavy emoji package), reply-by-long-press with a quote above the
-/// composer, and photos via file_picker, downscaled before sending.
+/// composer, and photos via file_picker, up to 5 MB (2.8.0 — was ~120 KB).
+/// Photos travel chunked over the relay (32 KiB pieces, SHA-256 checked on
+/// reassembly), so a big photo never stalls the room as one giant packet;
+/// sending / receiving progress shows as a slim row above the composer
+/// while a transfer is in flight.
 ///
 /// Message contents are never logged anywhere.
 class TogetherChatPanel extends StatefulWidget {
@@ -88,6 +93,10 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
     );
   }
 
+  void _showSnack(String text) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
   Future<void> _sendImage() async {
     if (_sendingImage) return;
     setState(() => _sendingImage = true);
@@ -99,17 +108,25 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
       if (picked.isEmpty) return;
       final bytes = await picked.first.readAsBytes();
       if (bytes.isEmpty) return;
-      final sent = await widget.service.sendChatImage(bytes);
+      final result = await widget.service.sendChatImage(bytes);
       if (!mounted) return;
-      if (!sent) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'That photo is too large to send in a Together room — '
-              'try a smaller one (max ~120KB after shrinking).',
-            ),
-          ),
-        );
+      switch (result) {
+        case TogetherImageSendResult.sent:
+          break;
+        case TogetherImageSendResult.notConnected:
+          _showSnack(
+            'Not connected to the Together relay — the photo wasn’t sent. '
+            'Try again once you’re reconnected.',
+          );
+        case TogetherImageSendResult.unreadable:
+          _showSnack(
+            'That file isn’t a readable photo — JPEG, PNG, WebP or GIF.',
+          );
+        case TogetherImageSendResult.tooLarge:
+          _showSnack(
+            'That photo is still over 5 MB after shrinking — '
+            'try a smaller one.',
+          );
       }
     } finally {
       if (mounted) setState(() => _sendingImage = false);
@@ -121,6 +138,7 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
     final colorScheme = Theme.of(context).colorScheme;
     final service = widget.service;
     final messages = service.messages;
+    final transfers = service.imageTransfers;
     final width = MediaQuery.sizeOf(context).width;
     final panelWidth = width > 560 ? 380.0 : width * 0.88;
 
@@ -179,6 +197,7 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
                     ),
                     _quickEmojiRow(),
                     if (_replyTo != null) _replyQuote(),
+                    if (transfers.isNotEmpty) _transferRows(transfers),
                     _composerRow(context),
                   ],
                 ),
@@ -290,6 +309,59 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
             onTap: () => setState(() => _replyTo = null),
             child: const Icon(Icons.close_rounded, size: 16),
           ),
+        ],
+      ),
+    );
+  }
+
+  /// Slim progress rows for photos in flight (2.8.0 chunked transfer):
+  /// "Sending photo… 45%" / "Receiving photo… 45%", one row per transfer,
+  /// above the composer. A row disappears the moment its photo lands as a
+  /// message (or fails, in which case the room sees an honest line).
+  Widget _transferRows(List<TogetherImageTransfer> transfers) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final transfer in transfers)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Row(
+                children: [
+                  Icon(
+                    transfer.isOutgoing
+                        ? Icons.upload_rounded
+                        : Icons.download_rounded,
+                    size: 16,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: transfer.progress,
+                        minHeight: 4,
+                        backgroundColor: colorScheme.onSurface.withValues(
+                          alpha: 0.15,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${transfer.isOutgoing ? 'Sending' : 'Receiving'} photo… '
+                    '${(transfer.progress * 100).round()}%',
+                    style: TextStyle(
+                      color: colorScheme.onSurfaceVariant,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );

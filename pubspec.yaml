@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 2.7.0+2700
+version: 2.8.0+2800
 
 environment:
   sdk: ^3.13.0
@@ -147,6 +147,12 @@ dev_dependencies:
     sdk: flutter
   integration_test:
     sdk: flutter
+
+  # Fake clock for timer-driven tests (Together image retry timer).
+  # flutter_test brings it in transitively; listing it directly makes the
+  # import a real dependency instead of a lint
+  # (`depend_on_referenced_packages`).
+  fake_async: ^1.3.3
 
   # Runs integration_test/ against a real engine on a real device or desktop
   # runner. `flutter test` alone cannot catch a native failure: it runs on

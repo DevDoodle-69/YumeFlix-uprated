@@ -100,12 +100,21 @@ class DiscordPresenceService extends ChangeNotifier {
   String? _title;
   String? _state;
   String? _posterUrl;
-  String? _extensionPosterUrl;
+  List<String> _extensionPosterUrls = const [];
   String? _tmdbPosterUrl;
   String? _cinemetaPosterUrl;
   String? _imdbId;
+  String? _searchTitle;
   String? _artworkLookupKey;
-  final DiscordArtworkResolver _artworkResolver = DiscordArtworkResolver();
+  DiscordArtworkResolver _artworkResolver = DiscordArtworkResolver();
+
+  /// Test seam: swaps the artwork resolver (HTTP layer) so verification
+  /// and keyless lookups can be driven with a stubbed Dio. Production
+  /// code never calls this.
+  @visibleForTesting
+  void setArtworkResolverForTest(DiscordArtworkResolver resolver) {
+    _artworkResolver = resolver;
+  }
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
   bool _playing = false;
@@ -193,6 +202,7 @@ class DiscordPresenceService extends ChangeNotifier {
     required String title,
     String? state,
     String? posterUrl,
+    List<String?>? posterUrls,
     required String tmdbSearchTitle,
     required String tmdbMediaType,
     int? tmdbId,
@@ -203,21 +213,35 @@ class DiscordPresenceService extends ChangeNotifier {
   }) async {
     _title = title;
     _state = state;
-    _extensionPosterUrl = normalizePosterUrl(posterUrl);
+    // Every artwork the player knows about, in preference order — episode
+    // still, item poster, banner — instead of a single first-usable URL.
+    // Verification tries each in turn (see [_refreshVerifiedPoster]): the
+    // old single-URL form discarded the item poster entirely when the
+    // episode still failed verification, which is how a series with a
+    // perfectly good poster ended up with no cover at all.
+    final orderedPosters = <String>[];
+    for (final raw in [...?posterUrls, posterUrl]) {
+      final normalized = normalizePosterUrl(raw);
+      if (normalized != null && !orderedPosters.contains(normalized)) {
+        orderedPosters.add(normalized);
+      }
+    }
+    _extensionPosterUrls = orderedPosters;
     _imdbId = imdbId?.trim().isEmpty == true ? null : imdbId?.trim();
     final searchTitle = tmdbSearchTitle.trim().isEmpty
         ? title.trim()
         : tmdbSearchTitle.trim();
+    _searchTitle = searchTitle;
     final mediaType = tmdbMediaType.trim().toLowerCase() == 'tv'
         ? 'tv'
         : 'movie';
     final keyFingerprint = TmdbConfig.apiKey.hashCode.toRadixString(16);
     // The lookup key covers everything that can change the cover: a new
-    // title/id, a different extension poster, or a different IMDb id for the
+    // title/id, different extension artwork, or a different IMDb id for the
     // keyless Cinemeta fallback. Playback ticks reuse the same key and so
     // never re-verify or re-fetch artwork.
     final lookupKey =
-        '$mediaType|id:${tmdbId ?? 0}|imdb:${_imdbId ?? ''}|ext:${_extensionPosterUrl ?? ''}|${searchTitle.toLowerCase()}|$keyFingerprint';
+        '$mediaType|id:${tmdbId ?? 0}|imdb:${_imdbId ?? ''}|ext:${_extensionPosterUrls.join(',')}|${searchTitle.toLowerCase()}|$keyFingerprint';
     final lookupChanged = lookupKey != _artworkLookupKey;
     if (lookupChanged) {
       _artworkLookupKey = lookupKey;
@@ -235,7 +259,7 @@ class DiscordPresenceService extends ChangeNotifier {
     // Discord's media proxy does not fetch every host the app itself can
     // load. A TMDB poster (image.tmdb.org) is the one host the proxy
     // reliably serves, so it outranks an extension poster from any other
-    // host; the extension URL still wins when it already lives on
+    // host; the extension URLs still win when they already live on
     // image.tmdb.org or when TMDB has nothing for this title. Nothing is
     // sent as the cover until it has been fetch-verified — see
     // [_refreshVerifiedPoster] — so [_posterUrl] stays null here and the
@@ -283,12 +307,14 @@ class DiscordPresenceService extends ChangeNotifier {
   /// re-publishes the presence with it.
   ///
   /// Priority: TMDB poster (image.tmdb.org, the host Discord's media proxy
-  /// serves most reliably) → extension poster → keyless Cinemeta poster
-  /// (only fetched when neither of the first two verified, and only when
-  /// the item carries an IMDb id). A candidate that fails verification
-  /// (non-200, non-image, unreachable) never blocks the next one, and when
-  /// nothing verifies the activity is re-sent with no image at all — never
-  /// with a dead asset key.
+  /// serves most reliably) → each extension poster in the order the player
+  /// passed them (episode still, item poster, banner) → keyless Cinemeta
+  /// poster by IMDb id (only when the item carries one) → keyless Cinemeta
+  /// poster by exact title search (the fallback for plugin items, which
+  /// carry no IMDb id in keyless builds). A candidate that fails
+  /// verification (non-200, non-image, unreachable) never blocks the next
+  /// one, and when nothing verifies the activity is re-sent with no image
+  /// at all — never with a dead asset key.
   ///
   /// Runs only when the artwork lookup changes (or a late TMDB result
   /// arrives), never per playback tick: verification results are cached in
@@ -308,8 +334,8 @@ class DiscordPresenceService extends ChangeNotifier {
       final candidates = <({String url, String source})>[
         if (_tmdbPosterUrl != null)
           (url: _tmdbPosterUrl!, source: 'tmdb'),
-        if (_extensionPosterUrl != null)
-          (url: _extensionPosterUrl!, source: 'extension'),
+        for (final url in _extensionPosterUrls)
+          (url: url, source: 'extension'),
       ];
       // De-duplicate: the extension poster and the TMDB poster are often
       // the same image.tmdb.org URL, and verifying it twice is pure waste.
@@ -329,9 +355,9 @@ class DiscordPresenceService extends ChangeNotifier {
         failed.add('${candidate.source} poster did not verify');
       }
 
-      // Keyless fallback, only when the first two sources had nothing
-      // verified and the item carries an IMDb id. Cinemeta needs no key,
-      // which matters because the shipped TMDB key is unset (see
+      // Keyless fallback by IMDb id, only when the first sources had
+      // nothing verified and the item carries an IMDb id. Cinemeta needs no
+      // key, which matters because the shipped TMDB key is unset (see
       // [DiscordArtworkResolver.resolveKeyless]).
       if (verified == null && _artworkLookupKey == lookupKey) {
         final cinemeta = _cinemetaPosterUrl ??
@@ -349,6 +375,34 @@ class DiscordPresenceService extends ChangeNotifier {
           verifiedSource = 'cinemeta';
         } else if (cinemetaUrl != null) {
           failed.add('cinemeta poster did not verify');
+        }
+      }
+
+      // Keyless fallback by exact title, only when there is still nothing
+      // verified. Plugin items in keyless builds carry no IMDb id at all
+      // (no syncData.imdb, and the details-screen enrichment needs a TMDB
+      // key), so without this the chain ended at the extension poster and
+      // a series whose still failed verification got no cover at all.
+      // The search only accepts an exact title match, so a wrong film's
+      // poster can never be adopted here.
+      if (verified == null && _artworkLookupKey == lookupKey) {
+        final searchTitle = _searchTitle;
+        if (searchTitle != null && searchTitle.trim().isNotEmpty) {
+          final byTitle = await _artworkResolver.resolveKeylessByTitle(
+            title: searchTitle,
+            mediaType: mediaType,
+          );
+          if (_artworkLookupKey != lookupKey) return;
+          final byTitleUrl = normalizePosterUrl(byTitle);
+          if (byTitleUrl != null &&
+              !seen.contains(byTitleUrl) &&
+              await _artworkResolver.verifyPosterUrl(byTitleUrl)) {
+            verified = byTitleUrl;
+            verifiedSource = 'cinemeta';
+            _cinemetaPosterUrl = byTitleUrl;
+          } else if (byTitleUrl != null) {
+            failed.add('cinemeta title-search poster did not verify');
+          }
         }
       }
 
@@ -383,10 +437,11 @@ class DiscordPresenceService extends ChangeNotifier {
     _title = null;
     _state = null;
     _posterUrl = null;
-    _extensionPosterUrl = null;
+    _extensionPosterUrls = const [];
     _tmdbPosterUrl = null;
     _cinemetaPosterUrl = null;
     _imdbId = null;
+    _searchTitle = null;
     _artworkLookupKey = null;
     _lastPosterSource = 'none';
     _lastArtworkNote = null;
