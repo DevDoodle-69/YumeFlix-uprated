@@ -96,6 +96,18 @@ jobs:
           java-version: '25'
           cache: gradle
 
+      # The 2.6.0 run failed with "No space left on device" in the Debug
+      # build: split + universal release APKs (~114 MB each, plus Gradle /
+      # Flutter intermediates) had already filled the runner disk. Free the
+      # big unused toolchains first, and drop the Debug APK entirely — the
+      # user only installs the release APK.
+      - name: Free Disk Space
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/local/lib/android/sdk/ndk 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          df -h
+
       - name: Install Dependencies
         run: |
           flutter pub get
@@ -140,9 +152,6 @@ jobs:
       - name: Build Universal APK
         run: flutter build apk --release --dart-define-from-file=dart-defines.json
 
-      - name: Build Debug APK
-        run: flutter build apk --debug --dart-define-from-file=dart-defines.json
-
       - name: Rename APKs
         run: |
           VERSION="${{ needs.version.outputs.version }}"
@@ -151,11 +160,6 @@ jobs:
           # Universal Release
           if [ -f "app-release.apk" ]; then
             mv "app-release.apk" "../../../../yumeflix-android-universal-${VERSION}.apk"
-          fi
-          
-          # Universal Debug
-          if [ -f "app-debug.apk" ]; then
-            mv "app-debug.apk" "../../../../yumeflix-android-debug-${VERSION}.apk"
           fi
           
           # Splits
