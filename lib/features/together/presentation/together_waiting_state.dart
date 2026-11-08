@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../../core/theme/design_tokens.dart';
 
+import '../connection.dart';
 import '../together_service.dart';
 
 /// The guest waiting state: a live screen, never a dead one.
@@ -21,8 +22,14 @@ import '../together_service.dart';
 ///   `left`) — "Host left the room", playback carries on locally;
 /// * nothing is heard from the host for 30 s ([TogetherService.waitingStale])
 ///   — "No signal from the host yet", with Retry / Leave. The host
-///   publishes a status on create and a heartbeat every 2 s, so 30 s of
+///   publishes a status on create and a heartbeat every 1 s, so 30 s of
 ///   total silence means the relay or the host is gone, not slow browsing.
+///
+/// A third state, also real: the relay itself drops while the room is
+/// open ([TogetherService.reconnecting]) — "Connection lost —
+/// reconnecting…", with the attempt count. The stale card stays hidden
+/// while that runs: the reconnect loop is already retrying, and the
+/// room re-syncs automatically when the relay answers.
 ///
 /// When the host presses Start, the retained state arrives and the service
 /// flips to `live` — this widget unmounts and the player takes over.
@@ -94,6 +101,14 @@ class _TogetherGuestWaitingStateState
     final media = service.currentMedia;
     final hostGone = service.hostGone;
     final stale = service.waitingStale;
+    // A relay drop is not a host departure and not a dead room: while
+    // the service retries the relay, the headline says so honestly —
+    // "Connection lost — reconnecting…" — instead of the last known room
+    // status, which is stale the moment the relay drops (it could still
+    // say "Host is playing" while nothing is arriving). The reconnect
+    // re-syncs automatically when the relay answers; nothing here asks
+    // the guest to do anything.
+    final reconnecting = service.reconnecting;
 
     // Bounded by construction: the text scale is capped (a large system
     // font scale must not blow the waiting copy up past the card), every
@@ -161,8 +176,12 @@ class _TogetherGuestWaitingStateState
             ),
           ] else ...[
             Text(
-              // The live status, straight off the wire.
-              service.roomStatus.label,
+              // The live status, straight off the wire — or the honest
+              // reconnecting line while the relay is down (never a stale
+              // "Host is playing" over a dropped connection).
+              reconnecting
+                  ? 'Connection lost — reconnecting…'
+                  : service.roomStatus.label,
               textAlign: TextAlign.center,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
@@ -187,6 +206,22 @@ class _TogetherGuestWaitingStateState
                 decoration: TextDecoration.none,
               ),
             ),
+            if (reconnecting) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Attempt ${service.reconnectAttempt + 1} of '
+                '$kTogetherMaxReconnectAttempts — the room re-syncs '
+                'automatically when the relay answers.',
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: colorScheme.onSurfaceVariant,
+                  decoration: TextDecoration.none,
+                ),
+              ),
+            ],
             if (media != null) ...[
               const SizedBox(height: 14),
               Container(
@@ -284,7 +319,12 @@ class _TogetherGuestWaitingStateState
                 decoration: TextDecoration.none,
               ),
             ),
-            if (stale) ...[
+            // The stale card stays hidden while a reconnect is already
+            // running: its Retry would cancel the loop that is already
+            // retrying, and "the relay may have dropped" is the wrong
+            // copy for a drop the app is actively recovering from — the
+            // reconnecting line above is the honest state instead.
+            if (stale && !reconnecting) ...[
               const SizedBox(height: 14),
               Container(
                 padding: const EdgeInsets.all(14),

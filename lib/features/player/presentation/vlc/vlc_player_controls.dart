@@ -191,11 +191,14 @@ class VlcPlayerControls extends ConsumerStatefulWidget {
   final bool promptVisible;
 
   /// True when this viewer is a guest in a live Together room whose host is
-  /// still there: the transport belongs to the host, so play/pause, seeks
-  /// and the scrubber are inert here (a press explains itself with a
-  /// "Host controls playback" toast) and the host's state drives the
-  /// engine instead. False once the host has left — the guest watches on
-  /// locally, under its own control again.
+  /// still there: seeks, episode / source / language changes and the
+  /// scrubber are inert here (a press explains itself with a "Host controls
+  /// playback" toast) and the host's state drives the engine instead.
+  /// Play/pause is NOT covered by this lock (2.11.0): a guest pause holds
+  /// only their own engine, and their next play jumps to the host's live
+  /// position. Brightness and volume are local device controls and were
+  /// never gated by it. False once the host has left — the guest watches
+  /// on locally, under its own control again.
   final bool togetherGuestLocked;
 
   /// Opens the Together chat panel. Null when no room is active, and then
@@ -1305,13 +1308,12 @@ class _VlcPlayerControlsState extends ConsumerState<VlcPlayerControls> {
 
   /// Play or pause, read exactly as the glyph reads it: a rebuffer is still
   /// playback, so the key does what the button shows.
+  ///
+  /// 2.11.0 guest-local play/pause: the press IS honoured for a guest — it
+  /// pauses only their own engine (the hook holds it as a local pause and
+  /// never publishes it), and their next play jumps to the host's live
+  /// position. Seeks stay host-only (see [_seekBy]).
   void _togglePlayback() {
-    // A guest's transport is the host's: the press is not honoured, and the
-    // toast says why instead of the button silently doing nothing.
-    if (widget.togetherGuestLocked) {
-      _showToast('Host controls playback');
-      return;
-    }
     final running = widget.controller.value;
     running.isPlaying || running.isBuffering
         ? widget.controller.pause()
@@ -1467,17 +1469,15 @@ class _VlcPlayerControlsState extends ConsumerState<VlcPlayerControls> {
               // Only on TV: a keyboard user wants arrows seeking from the
               // start, which they do while the sink holds focus, not a button.
               autofocus: isTv,
-              // A guest's play button is inert rather than dead: null
-              // renders it disabled, and the "Host controls playback" pill
-              // the screen paints says why.
-              onPressed: widget.togetherGuestLocked
-                  ? null
-                  : () {
-                      _chrome.poke();
-                      playing
-                          ? widget.controller.pause()
-                          : widget.controller.play();
-                    },
+              // 2.11.0: play/pause is the guest's own — the button stays
+              // live for a locked guest, and the hook turns the press into
+              // a local pause (play catches them back up to the host).
+              onPressed: () {
+                _chrome.poke();
+                playing
+                    ? widget.controller.pause()
+                    : widget.controller.play();
+              },
             );
           },
         ),
@@ -1926,14 +1926,12 @@ class _VlcPlayerControlsState extends ConsumerState<VlcPlayerControls> {
                         return PlayerCenterControls(
                           playing: playing,
                           playLabel: playing ? l10n.pause : l10n.play,
-                          // Non-nullable by construction: a locked guest
-                          // gets the toast, not a dead disc.
+                          // 2.11.0: the centre disc pauses and plays for a
+                          // guest too — a local pause only, never the room's.
+                          // The step buttons below stay host-only (null
+                          // while locked), and so does every seek path.
                           onPlayPause: () {
                             _chrome.poke();
-                            if (widget.togetherGuestLocked) {
-                              _showToast('Host controls playback');
-                              return;
-                            }
                             playing
                                 ? widget.controller.pause()
                                 : widget.controller.play();

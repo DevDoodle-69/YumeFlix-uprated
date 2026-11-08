@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:vlc_player/vlc_player.dart';
 
 import '../../core/domain/entity/multimedia_item.dart';
 import '../../core/services/discord_presence_service.dart';
+import '../../core/utils/app_utils.dart';
 import 'models.dart';
 import 'sync_math.dart';
 import 'together_service.dart';
@@ -54,6 +56,24 @@ class TogetherPlayerHook {
   /// on every tick.
   double _appliedRate = 1.0;
 
+  /// True while this guest is holding a local pause (see
+  /// [guestLocallyPaused]). While set, no host state is applied to the
+  /// engine at all — not on a tick, not on an incoming state — so the
+  /// pause can never be snapped back by the sync that is supposed to
+  /// follow the host.
+  bool _guestLocallyPaused = false;
+
+  /// Last sync decision handed to the engine, for tests: the decision is
+  /// the observable half of applying host state (the engine calls
+  /// themselves go to a real controller and cannot be observed in a unit
+  /// test). Set in [_maybeApplyHostState] before the decision is applied.
+  SyncDecision? _lastAppliedDecision;
+
+  /// Last sync decision applied to the engine, or null before the first
+  /// one. Test-only read.
+  @visibleForTesting
+  SyncDecision? get lastAppliedDecisionForTest => _lastAppliedDecision;
+
   /// Last time the guest evaluated the host state (throttled: the engine
   /// ticks four times a second and the decision only changes slowly —
   /// 500 ms between evaluations, 250 ms for a forced one).
@@ -66,10 +86,30 @@ class TogetherPlayerHook {
   /// there: the transport is the host's, and the controls render disabled
   /// with a "Host controls playback" hint. False when the host has left —
   /// the guest keeps watching locally, under its own control.
+  ///
+  /// 2.11.0: this lock covers seeks, episode / source / language changes
+  /// and the panel — NOT play/pause. Play/pause is the guest's own (see
+  /// [guestLocallyPaused]): a guest pause holds only that phone, and
+  /// resume jumps to the host's live position. The controls widget reads
+  /// this same flag and lets play/pause through while it holds.
   bool get guestControlsLocked =>
       service.role == TogetherRole.guest &&
       service.isLive &&
       !service.hostGone;
+
+  /// True while this guest is holding a LOCAL pause (2.11.0): they pressed
+  /// pause while the host was playing, so only their own engine is paused
+  /// — the host and every other guest keep watching, nothing is published
+  /// to the room, and no host state is applied over the hold. Clears the
+  /// moment they press play again, which jumps them to the host's current
+  /// live position instead of resuming where they stopped.
+  bool get guestLocallyPaused => _guestLocallyPaused;
+
+  /// The brief fallback-source note the auto-open coordinator recorded
+  /// after opening this title on a different source than the host's, or
+  /// null when the open used the host's exact source. The player screen
+  /// shows it as one short pill.
+  String? get guestSourceFallbackNotice => service.guestAutoOpenNotice;
 
   /// True when the host may go live right now: the room is pending, a
   /// title is picked, this player is open, and the movie is actually
@@ -154,6 +194,23 @@ class TogetherPlayerHook {
     );
   }
 
+  /// Host: records the stream source the player is actually playing
+  /// (2.11.0 — the label of the resolved stream, e.g. `Server 1`) on the
+  /// room identity and re-publishes it when live, so every guest learns
+  /// the host's source pick at once. A source-only change keeps the
+  /// position (see [TogetherService.attachMedia]); only a title change
+  /// restarts at 0. A no-op when the source did not change. Called by the
+  /// player screen when resolution completes and when the host hand-picks
+  /// another source — never on automatic failover, which stays local to
+  /// the phone that failed over.
+  void updateSource(String sourceLabel) {
+    if (sourceLabel.isEmpty) return;
+    final updated = _media.withSource(sourceLabel);
+    if (updated == _media) return;
+    _media = updated;
+    service.attachMedia(updated);
+  }
+
   /// Called from the screen's playback-value listener, on every engine tick.
   ///
   /// For a guest in a live room this is also the enforcement point of
@@ -165,16 +222,48 @@ class TogetherPlayerHook {
   /// state immediately instead of waiting for the next throttled
   /// evaluation, so the guest's engine can never fight the host for more
   /// than one tick.
+  ///
+  /// 2.11.0 exception — the guest's own play/pause (see
+  /// [guestLocallyPaused]): a guest pause while the host is playing holds
+  /// ONLY this phone (no publish, no snap-back), and the guest's next play
+  /// jumps straight to the host's current live position instead of
+  /// resuming where they stopped.
   void onLocalPlayback(VlcPlayerValue value) {
     if (!_attached || _applyingRemote) return;
     service.reportLocalPlayback(
       positionMs: value.position.inMilliseconds,
       durationMs: value.duration.inMilliseconds,
       playing: value.isPlaying,
+      // 2.11.0 (Worker B's speed end-to-end): the host's playback speed
+      // rides in the live payload, so a 2× host does not leave the guest
+      // chasing a 1× target. At 1× this changes nothing.
+      playbackSpeed: value.playbackSpeed,
     );
-    if (service.role == TogetherRole.guest && service.isLive) {
-      _maybeApplyHostState(force: _divergedFromHost(value));
+    if (service.role != TogetherRole.guest || !service.isLive) return;
+    final hostPlaying = service.roomState?.playing ?? false;
+    if (!value.isPlaying &&
+        !value.isBuffering &&
+        hostPlaying &&
+        !service.hostGone) {
+      // A paused engine under a playing host is a local hold, not drift:
+      // take it, hold it, and apply nothing over it. Deliberately no
+      // publish anywhere — the host and the other guests never learn this
+      // phone paused, because for them nothing changed. Buffering is not
+      // a hold: a stalled engine is still trying to play, and the normal
+      // sync below is what pulls it back.
+      _guestLocallyPaused = true;
+      return;
     }
+    if (value.isPlaying && _guestLocallyPaused) {
+      // Resume means catch up, not resume-where-stopped: clear the hold
+      // and force the host state at once, which seeks to the host's
+      // current live position (see [_maybeApplyHostState]).
+      _guestLocallyPaused = false;
+      _maybeApplyHostState(force: true);
+      return;
+    }
+    if (_guestLocallyPaused) return;
+    _maybeApplyHostState(force: _divergedFromHost(value));
   }
 
   /// True when the guest's engine disagrees with the host's latest state
@@ -182,7 +271,11 @@ class TogetherPlayerHook {
   /// further than the seek threshold from where the host is now. A
   /// disagreement this big is a guest input (or a fresh join), not drift
   /// — it earns an immediate correction, not a throttled one.
+  ///
+  /// A guest holding a local pause never counts as diverged: the pause is
+  /// theirs to hold, and the correction would undo it.
   bool _divergedFromHost(VlcPlayerValue value) {
+    if (_guestLocallyPaused) return false;
     final state = service.roomState;
     if (state == null || service.hostGone) return false;
     if (value.isPlaying != state.playing) return true;
@@ -205,11 +298,15 @@ class TogetherPlayerHook {
           .whenComplete(() => _applyingRemote = false);
     }
     if (service.role == TogetherRole.guest && service.isLive) {
-      _maybeApplyHostState(force: true);
+      // A guest holding a local pause is never snapped back by an
+      // incoming host state — not by a play/pause flip, not by a seek,
+      // not by a title change. The hold ends only when they press play.
+      if (!_guestLocallyPaused) _maybeApplyHostState(force: true);
     }
   }
 
   void _maybeApplyHostState({bool force = false}) {
+    if (_guestLocallyPaused) return;
     final state = service.roomState;
     if (state == null || service.hostGone) return;
     final now = DateTime.now();
@@ -232,7 +329,12 @@ class TogetherPlayerHook {
       nowMs: now.millisecondsSinceEpoch,
       hostPlaying: state.playing,
       durationMs: state.durationMs,
+      // 2.11.0 (Worker B's speed end-to-end): the drift correction must
+      // aim at where the host is going at the host's speed — at 1× this
+      // is the same target as before, at 2× it is twice as far along.
+      hostPlaybackSpeed: state.playbackSpeed,
     );
+    _lastAppliedDecision = decision;
     unawaited(_applyDecision(decision, state));
   }
 
@@ -287,16 +389,11 @@ class TogetherPlayerHook {
 /// normalised title decides (case / surrounding space ignored) — episode
 /// titles embed their `S/E` suffix, so that comparison already separates
 /// episodes. Public so tests can pin the episode rule without an engine.
-bool togetherSameTitle(TogetherMediaIdentity a, TogetherMediaIdentity b) {
-  if (a.tmdbId != null && b.tmdbId != null) {
-    if (a.tmdbId != b.tmdbId) return false;
-    if (a.episodeLabel != null || b.episodeLabel != null) {
-      return a.episodeLabel == b.episodeLabel;
-    }
-    return true;
-  }
-  return a.title.trim().toLowerCase() == b.title.trim().toLowerCase();
-}
+/// The rule itself lives on the identity ([TogetherMediaIdentity.sameTitleAs]);
+/// the source/provider/URLs never take part — the same title on a
+/// different source is still the same title.
+bool togetherSameTitle(TogetherMediaIdentity a, TogetherMediaIdentity b) =>
+    a.sameTitleAs(b);
 
 /// Builds the room's media identity from the title the player opened.
 ///
@@ -314,9 +411,20 @@ bool togetherSameTitle(TogetherMediaIdentity a, TogetherMediaIdentity b) {
 /// player screen already gates its own titles the same way (see its
 /// `_currentEpisode`, which is null for films); this hook takes the raw
 /// route episode, so the gate has to live here too.
+///
+/// 2.11.0 — the identity also carries what a guest needs to open the SAME
+/// source the host chose: [itemUrl] (the provider detail URL),
+/// [episodeUrl] (the episode data URL the player resolves streams from)
+/// and the provider, plus the season/episode numbers. [videoUrl] is the
+/// URL the player itself was opened with: for a film (where the episode is
+/// null) it IS the episode URL, and for a series opened without an explicit
+/// episode it names the episode the URL match found. A local file is never
+/// shared as [episodeUrl] — it does not exist on the guest's phone — so a
+/// downloaded title falls back to the guest resolving it from [itemUrl].
 TogetherMediaIdentity togetherMediaIdentityFor({
   required MultimediaItem item,
   Episode? episode,
+  String? videoUrl,
 }) {
   final isSeries =
       item.contentType == MultimediaContentType.series ||
@@ -344,11 +452,28 @@ TogetherMediaIdentity togetherMediaIdentityFor({
       break;
     }
   }
+  // The episode data URL, or the player's own open URL when no episode was
+  // passed (a film, or a series resolved by URL match). Never a local
+  // file: the guest cannot play a path from this phone's disk.
+  final episodeToken = (episode?.url.isNotEmpty ?? false)
+      ? episode!.url
+      : videoUrl;
+  final shareableEpisodeUrl =
+      episodeToken != null &&
+          episodeToken.isNotEmpty &&
+          !AppUtils.isLocalFile(episodeToken)
+      ? episodeToken
+      : null;
   return TogetherMediaIdentity(
     title: title,
     tmdbType: isSeries ? 'tv' : 'movie',
     tmdbId: item.tmdbId,
     posterUrl: poster,
     episodeLabel: episodeLabel,
+    season: isSeries && season > 0 ? season : null,
+    episode: isSeries && episodeNumber > 0 ? episodeNumber : null,
+    provider: item.provider,
+    itemUrl: item.url.isNotEmpty ? item.url : null,
+    episodeUrl: shareableEpisodeUrl,
   );
 }

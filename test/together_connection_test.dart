@@ -327,7 +327,7 @@ void main() {
       );
       expect(service.hostPresent, isTrue);
       expect(service.memberCount, 1);
-      expect(service.presenceLabel, 'Host in room');
+      expect(service.presenceLabel, 'HOST 👑 in room');
 
       service.debugReceivePayloadForTest(
         jsonEncode(

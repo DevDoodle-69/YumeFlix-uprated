@@ -22,6 +22,7 @@ import kotlin.math.roundToInt
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "yume.flix.by.nzr/player_pip"
     private val PLAYER_CHANNEL = "yume.flix.by.nzr/external_player"
+    private val UPDATE_CHANNEL = "yume.flix.by.nzr/app_update"
 
     private var isPlaying = false
     private var previousUncaughtHandler: Thread.UncaughtExceptionHandler? = null
@@ -123,6 +124,79 @@ class MainActivity : FlutterActivity() {
                 }
             } else {
                 result.notImplemented()
+            }
+        }
+
+        // In-app updates (YumeFlix 2.11.0) — see
+        // lib/features/update/app_update_installer.dart (Dart side).
+        //
+        // The system installer is the only way to install an APK the app
+        // downloaded itself, and Android requires the user to confirm the
+        // install tap: the app opens the installer, it never installs
+        // silently. REQUEST_INSTALL_PACKAGES is declared in
+        // AndroidManifest.xml; the FileProvider entry there already serves
+        // the application documents directory the APK is downloaded to.
+        MethodChannel(messenger, UPDATE_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "canRequestInstall" -> {
+                    result.success(
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            packageManager.canRequestPackageInstalls()
+                        } else {
+                            true
+                        },
+                    )
+                }
+                "requestInstallPermission" -> {
+                    // Opens the system "Install unknown apps" page for this
+                    // app. The user flips the switch there; the app cannot
+                    // do it for them. Returns to the app via the back stack.
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            val intent = Intent(
+                                android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                Uri.parse("package:$packageName"),
+                            ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                            startActivity(intent)
+                            result.success(true)
+                        } else {
+                            result.success(true)
+                        }
+                    } catch (e: Exception) {
+                        result.error("SETTINGS_ERROR", e.message, null)
+                    }
+                }
+                "installApk" -> {
+                    val path = call.argument<String>("path")
+                    if (path.isNullOrEmpty()) {
+                        result.error("INVALID_ARGS", "path is required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val file = File(path)
+                        if (!file.exists()) {
+                            result.error("NOT_FOUND", "APK file not found", null)
+                            return@setMethodCallHandler
+                        }
+                        val uri = FileProvider.getUriForFile(
+                            this,
+                            "${applicationContext.packageName}.fileProvider",
+                            file,
+                        )
+                        val intent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
+                            setDataAndType(uri, "application/vnd.android.package-archive")
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: android.content.ActivityNotFoundException) {
+                        result.error("NO_INSTALLER", e.message, null)
+                    } catch (e: Exception) {
+                        result.error("INSTALL_ERROR", e.message, null)
+                    }
+                }
+                else -> result.notImplemented()
             }
         }
     }

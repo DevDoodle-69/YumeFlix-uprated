@@ -5,9 +5,11 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/providers/device_info_provider.dart';
 import '../models.dart';
+import '../sync_math.dart';
 import '../together_provider.dart';
 import '../together_service.dart';
 import 'together_connection_status.dart';
+import 'together_member_list.dart';
 import 'together_waiting_state.dart';
 
 /// The Together tab: watch the same title on two phones, in sync.
@@ -36,10 +38,12 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
   void initState() {
     super.initState();
     // The rejoin card needs the snapshot before the first frame that could
-    // show it.
-    Future.microtask(
-      () => ref.read(togetherServiceProvider).loadLastRoom(),
-    );
+    // show it, and the join dialog needs the last typed name pre-filled.
+    Future.microtask(() {
+      final service = ref.read(togetherServiceProvider);
+      service.loadLastRoom();
+      service.loadLastGuestName();
+    });
   }
 
   @override
@@ -72,6 +76,54 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
     Clipboard.setData(ClipboardData(text: otp));
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Room code copied — send it to your friend')),
+    );
+  }
+
+  /// Guest join, with the name first (2.11.0): the code is checked, then a
+  /// small dialog asks for the guest's name — required, pre-filled with
+  /// the last name typed on this phone — and only a valid name joins the
+  /// room. An invalid code never reaches the dialog: the service reports
+  /// it through the normal error path instead.
+  Future<void> _joinWithName() async {
+    final code = _otpController.text.trim();
+    if (!isValidOtp(code)) {
+      await _run(() => ref.read(togetherServiceProvider).joinRoom(code));
+      return;
+    }
+    final service = ref.read(togetherServiceProvider);
+    await service.loadLastGuestName();
+    if (!mounted) return;
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => _GuestNameDialog(
+        initialName: service.lastGuestName ?? '',
+      ),
+    );
+    if (name == null || !mounted) return;
+    await _run(
+      () => ref.read(togetherServiceProvider).joinRoom(code, displayName: name),
+    );
+  }
+
+  /// Rejoining the last room as a guest asks for the name too (pre-filled
+  /// with the last one typed); a host rejoin needs no name.
+  Future<void> _rejoin(TogetherLastRoom last) async {
+    if (last.role != TogetherRole.guest.name) {
+      await _run(ref.read(togetherServiceProvider).rejoinLastRoom);
+      return;
+    }
+    final service = ref.read(togetherServiceProvider);
+    await service.loadLastGuestName();
+    if (!mounted) return;
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => _GuestNameDialog(
+        initialName: service.lastGuestName ?? '',
+      ),
+    );
+    if (name == null || !mounted) return;
+    await _run(
+      () => ref.read(togetherServiceProvider).joinRoom(last.otp, displayName: name),
     );
   }
 
@@ -266,9 +318,7 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
             children: [
               Expanded(
                 child: FilledButton(
-                  onPressed: _busy
-                      ? null
-                      : () => _run(service.rejoinLastRoom),
+                  onPressed: _busy ? null : () => _rejoin(last),
                   child: const Text('Rejoin'),
                 ),
               ),
@@ -366,7 +416,9 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
         _choiceCard(
           icon: Icons.group_rounded,
           title: 'Join a room',
-          subtitle: 'Enter the 6-digit code your friend sent you.',
+          subtitle:
+              'Enter the 6-digit code your friend sent you. You’ll type '
+              'your name before joining.',
           buttonLabel: null,
           onPressed: null,
           trailing: Row(
@@ -386,9 +438,7 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
               ),
               const SizedBox(width: 10),
               FilledButton(
-                onPressed: _busy
-                    ? null
-                    : () => _run(() => service.joinRoom(_otpController.text)),
+                onPressed: _busy ? null : _joinWithName,
                 child: const Text('Join'),
               ),
             ],
@@ -475,6 +525,11 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
         ),
         const SizedBox(height: 10),
         Center(child: TogetherConnectionStatus(service: service)),
+        const SizedBox(height: 10),
+        TogetherMemberList(
+          members: service.members,
+          ownClientId: service.clientId,
+        ),
         const SizedBox(height: 6),
         const Text(
           'The Enjoy Together orb is now floating — drag it anywhere, '
@@ -503,6 +558,11 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
         _otpCard(service, service.otp ?? ''),
         const SizedBox(height: 16),
         Center(child: TogetherConnectionStatus(service: service)),
+        const SizedBox(height: 10),
+        TogetherMemberList(
+          members: service.members,
+          ownClientId: service.clientId,
+        ),
         const SizedBox(height: 20),
         TogetherGuestWaitingState(
           service: service,
@@ -575,8 +635,32 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
               ),
               const SizedBox(height: 10),
               Center(child: TogetherConnectionStatus(service: service)),
+              const SizedBox(height: 10),
+              TogetherMemberList(
+                members: service.members,
+                ownClientId: service.clientId,
+              ),
               if (!isHost && service.roomState != null) ...[
                 const SizedBox(height: 14),
+                // 2.11.0 auto-open: while the title is resolving the guest
+                // sees "Opening…"; if it could not open, the honest line
+                // with the manual "Find this title" fallback — never a
+                // silent stuck screen. The button stays as the fallback
+                // even when auto-open worked, for a guest who backed out
+                // of the player and wants back in.
+                if (service.guestAutoOpenPending)
+                  const Text(
+                    'Opening the host’s title…',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 12),
+                  )
+                else if (service.guestAutoOpenFailure != null) ...[
+                  Text(
+                    service.guestAutoOpenFailure!,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 10),
+                ],
                 OutlinedButton.icon(
                   onPressed: _pickTitle,
                   icon: const Icon(Icons.search_rounded),
@@ -640,6 +724,93 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// The guest name prompt (2.11.0): "Type your name", before entering the
+/// room. The name is required — Join stays disabled until a valid name is
+/// typed (empty or whitespace-only shows a short inline error) — trimmed
+/// and capped at [kTogetherGuestNameMaxLength]. Pre-filled with the last
+/// name typed on this phone, so a returning guest just taps Join. Minimal
+/// professional styling: a plain dialog, no giant text, no colour play.
+class _GuestNameDialog extends StatefulWidget {
+  const _GuestNameDialog({required this.initialName});
+
+  final String initialName;
+
+  @override
+  State<_GuestNameDialog> createState() => _GuestNameDialogState();
+}
+
+class _GuestNameDialogState extends State<_GuestNameDialog> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.initialName);
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _validate() {
+    setState(() => _error = validateTogetherGuestName(_controller.text));
+  }
+
+  void _submit() {
+    if (validateTogetherGuestName(_controller.text) != null) {
+      _validate();
+      return;
+    }
+    Navigator.of(context).pop(normalizeTogetherGuestName(_controller.text));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final valid = validateTogetherGuestName(_controller.text) == null;
+    return AlertDialog(
+      title: const Text('Type your name'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Your name shows in the room and in chat, so everyone knows '
+            'who you are.',
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontSize: 13,
+            ),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            maxLength: kTogetherGuestNameMaxLength,
+            textCapitalization: TextCapitalization.words,
+            decoration: InputDecoration(
+              labelText: 'Name',
+              hintText: 'Type your name',
+              errorText: _error,
+              counterText: '',
+              border: const OutlineInputBorder(),
+            ),
+            onChanged: (_) => _validate(),
+            onSubmitted: (_) => _submit(),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: valid ? _submit : null,
+          child: const Text('Join'),
+        ),
+      ],
     );
   }
 }

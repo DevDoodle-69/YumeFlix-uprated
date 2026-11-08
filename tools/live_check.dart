@@ -43,6 +43,13 @@
 //      series episode's state carries the exact `· S1 E1` title and label,
 //      so the guest opens the same title the host started.)
 //
+//   7. In-app updates (2.11.0, `_checkLatestRelease`): the public latest-
+//      release API answers, its tag parses as a plain release version, and
+//      it carries a universal APK asset (the exact
+//      `yumeflix-android-universal-vX.Y.Z.apk` name, or any `.apk` with
+//      "universal" in the name) whose download URL answers. A release with
+//      only split APKs would fail this check — the app never offers those.
+//
 // Exit code 0 = every check passed. Exit code 1 = at least one failed
 // (the failing check prints why). No credentials, no tokens, no writes.
 // A failure here means the feature is broken live — fix the code, not
@@ -1159,6 +1166,330 @@ Future<void> _checkTogetherStartFlow() async {
   } catch (_) {}
 }
 
+/// [7/7] In-app updates (2.11.0) — the source the app checks itself.
+/// Mirrors the selection in lib/features/update/update_models.dart:
+/// plain release tag (no pre-release suffix) + a universal APK asset.
+/// Only the asset's URL is fetched (HEAD), never the ~120 MB file.
+Future<void> _checkLatestRelease() async {
+  print('[7] In-app update source — latest GitHub release');
+  final json = await _getJson(
+    Uri.parse(
+      'https://api.github.com/repos/DevDoodle-69/YumeFlix-uprated/releases/latest',
+    ),
+  );
+  _check('latest-release API answers with JSON', json != null);
+  if (json == null) return;
+  final tag = (json['tag_name'] as String?) ?? '';
+  final plain = RegExp(r'^v?\d+\.\d+\.\d+$').hasMatch(tag);
+  _check(
+    'latest tag parses as a plain release version',
+    plain,
+    'got "$tag"',
+  );
+  _check('latest release is not a pre-release', json['prerelease'] != true);
+  _check('latest release is not a draft', json['draft'] != true);
+  final assets = json['assets'];
+  Map<String, dynamic>? universal;
+  if (assets is List) {
+    final exact = RegExp(
+      r'^yumeflix-android-universal-v[\d.]+\.apk$',
+      caseSensitive: false,
+    );
+    for (final raw in assets) {
+      if (raw is Map<String, dynamic>) {
+        final name = (raw['name'] as String?) ?? '';
+        if (exact.hasMatch(name)) {
+          universal = raw;
+          break;
+        }
+      }
+    }
+    universal ??= () {
+      for (final raw in assets) {
+        if (raw is Map<String, dynamic>) {
+          final name = ((raw['name'] as String?) ?? '').toLowerCase();
+          if (name.endsWith('.apk') && name.contains('universal')) {
+            return raw;
+          }
+        }
+      }
+      return null;
+    }();
+  }
+  _check(
+    'latest release carries a universal APK asset',
+    universal != null,
+    universal == null
+        ? 'assets: ${(assets is List ? assets.map((a) => a is Map ? a['name'] : '?').join(', ') : 'none')}'
+        : universal['name'] as String? ?? '',
+  );
+  if (universal != null) {
+    final url = universal['browser_download_url'] as String?;
+    final size = universal['size'];
+    _check(
+      'universal asset has a download URL and a plausible size',
+      url != null &&
+          url.startsWith('https://') &&
+          size is num &&
+          size > 50 * 1024 * 1024,
+      'size=${size is num ? (size / (1024 * 1024)).toStringAsFixed(0) : size} MB',
+    );
+    if (url != null) {
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 15);
+      try {
+        final head = await client.headUrl(Uri.parse(url));
+        head.headers.set('User-Agent', 'YumeFlix-live-check/2.11.0');
+        final response = await head.close().timeout(
+          const Duration(seconds: 30),
+        );
+        await response.drain<void>();
+        _check(
+          'universal APK URL answers (HEAD 200/302)',
+          response.statusCode == 200 || response.statusCode == 302,
+          'HTTP ${response.statusCode}',
+        );
+      } catch (e) {
+        _check('universal APK URL answers (HEAD 200/302)', false, '$e');
+      } finally {
+        client.close();
+      }
+    }
+  }
+}
+
+/// [8/8] Together guest auto-open (2.11.0) — the go-live payload a guest
+/// resolves from, the presence payload carrying the guest's typed name,
+/// and the room-full protocol a 6th guest receives.
+///
+/// Like [6/6], this checks the wire format with synthetic publishes
+/// through raw clients: the app's enforcement (the 5-guest cap counting,
+/// name validation, auto-open navigation, same-source resolution) is
+/// covered by flutter test — what the live broker proves here is that
+/// every field the guest needs survives the relay intact.
+Future<void> _checkTogetherGuestAutoOpen() async {
+  print('[8/8] Together guest auto-open payloads (live broker)');
+  final otp = (100000 + Random().nextInt(900000)).toString();
+  final topic = 'yumeflix/together/v1/$otp';
+  final guestId =
+      'livecheck-autoopen-guest-${Random().nextInt(1 << 30)}';
+  final hostId = 'livecheck-autoopen-host-${Random().nextInt(1 << 30)}';
+  final sixthId = 'livecheck-autoopen-sixth-${Random().nextInt(1 << 30)}';
+  MqttServerClient? guest;
+  MqttServerClient? host;
+  MqttServerClient? sixth;
+  String? relayLabel;
+  for (final relay in const [
+    ('wss://broker.emqx.io/mqtt', 8084, 'EMQX'),
+    ('wss://test.mosquitto.org/mqtt', 8081, 'Mosquitto'),
+  ]) {
+    guest = await _connectRelay(relay.$1, relay.$2, relay.$3, guestId);
+    if (guest != null) {
+      relayLabel = relay.$3;
+      break;
+    }
+  }
+  _check('guest connects to a Together relay', guest != null);
+  if (guest == null) {
+    print('  FAIL  guest auto-open skipped — no relay reachable');
+    _failed++;
+    return;
+  }
+  final relayUrl = relayLabel == 'EMQX'
+      ? 'wss://broker.emqx.io/mqtt'
+      : 'wss://test.mosquitto.org/mqtt';
+  final relayPort = relayLabel == 'EMQX' ? 8084 : 8081;
+  host = await _connectRelay(relayUrl, relayPort, relayLabel!, hostId);
+  _check('host connects to the same relay ($relayLabel)', host != null);
+  if (host == null) {
+    guest.disconnect();
+    return;
+  }
+  sixth = await _connectRelay(relayUrl, relayPort, relayLabel, sixthId);
+  _check('6th guest connects to the same relay ($relayLabel)', sixth != null);
+  if (sixth == null) {
+    host.disconnect();
+    guest.disconnect();
+    return;
+  }
+
+  final liveStateSeen = Completer<Map<String, dynamic>>();
+  final presenceSeen = Completer<Map<String, dynamic>>();
+  final roomFullSeen = Completer<Map<String, dynamic>>();
+  guest.subscribe(topic, MqttQos.atLeastOnce);
+  guest.updates!.listen((events) {
+    for (final event in events) {
+      final payload = event.payload as MqttPublishMessage;
+      final text = MqttPublishPayload.bytesToStringAsString(
+        payload.payload.message,
+      );
+      try {
+        final decoded = jsonDecode(text);
+        if (decoded is! Map<String, dynamic>) continue;
+        if (decoded['kind'] == 'state' &&
+            decoded['playing'] == true &&
+            !liveStateSeen.isCompleted) {
+          liveStateSeen.complete(decoded);
+        }
+      } catch (_) {}
+    }
+  });
+  host.subscribe(topic, MqttQos.atLeastOnce);
+  host.updates!.listen((events) {
+    for (final event in events) {
+      final payload = event.payload as MqttPublishMessage;
+      final text = MqttPublishPayload.bytesToStringAsString(
+        payload.payload.message,
+      );
+      try {
+        final decoded = jsonDecode(text);
+        if (decoded is! Map<String, dynamic>) continue;
+        if (decoded['kind'] == 'presence' &&
+            decoded['senderId'] == guestId &&
+            !presenceSeen.isCompleted) {
+          presenceSeen.complete(decoded);
+        }
+      } catch (_) {}
+    }
+  });
+  sixth.subscribe(topic, MqttQos.atLeastOnce);
+  sixth.updates!.listen((events) {
+    for (final event in events) {
+      final payload = event.payload as MqttPublishMessage;
+      final text = MqttPublishPayload.bytesToStringAsString(
+        payload.payload.message,
+      );
+      try {
+        final decoded = jsonDecode(text);
+        if (decoded is! Map<String, dynamic>) continue;
+        if (decoded['kind'] == 'room-full' &&
+            decoded['targetId'] == sixthId &&
+            !roomFullSeen.isCompleted) {
+          roomFullSeen.complete(decoded);
+        }
+      } catch (_) {}
+    }
+  });
+  await Future<void>.delayed(const Duration(seconds: 1));
+
+  // Presence: the guest announces itself with its role and the name it
+  // typed — the host learns who is in the room from this, not from a
+  // device name.
+  _publish(guest, topic, {
+    'kind': 'presence',
+    'senderId': guestId,
+    'role': 'guest',
+    'displayName': 'Aisha',
+  });
+  Map<String, dynamic>? presence;
+  try {
+    presence = await presenceSeen.future.timeout(
+      const Duration(seconds: 15),
+    );
+  } on TimeoutException {
+    presence = null;
+  }
+  _check('host receives the guest presence', presence != null);
+  if (presence != null) {
+    _check(
+      'presence carries the guest role and typed name',
+      presence['role'] == 'guest' && presence['displayName'] == 'Aisha',
+      'got role=${presence['role']} name=${presence['displayName']}',
+    );
+  }
+
+  // Go live: the full 2.11.0 identity — everything the guest needs to
+  // open the SAME title on the SAME source, with no extra round trip.
+  _publish(host, topic, {
+    'kind': 'state',
+    'media': {
+      'title': 'Dexter: Resurrection · S1 E1',
+      'tmdbType': 'tv',
+      'tmdbId': 234876,
+      'posterUrl': _dexterEpisodeStill,
+      'episodeLabel': 'S1 E1',
+      'season': 1,
+      'episode': 1,
+      'provider': 'MovieSubLK',
+      'itemUrl': 'https://example.invalid/dexter-resurrection',
+      'episodeUrl': 'https://example.invalid/dexter-resurrection-s1-e1',
+      'source': 'Server 1',
+    },
+    'positionMs': 14000,
+    'durationMs': 3084000,
+    'playing': true,
+    'hostTimestampMs': DateTime.now().millisecondsSinceEpoch,
+    'sequence': 1,
+    'hostId': hostId,
+  }, retain: true);
+  Map<String, dynamic>? liveState;
+  try {
+    liveState = await liveStateSeen.future.timeout(
+      const Duration(seconds: 15),
+    );
+  } on TimeoutException {
+    liveState = null;
+  }
+  _check('guest receives the go-live state', liveState != null);
+  if (liveState != null) {
+    final media = liveState['media'];
+    _check(
+      'go-live media carries provider + source + episode URL',
+      media is Map &&
+          media['provider'] == 'MovieSubLK' &&
+          media['source'] == 'Server 1' &&
+          media['episodeUrl'] ==
+              'https://example.invalid/dexter-resurrection-s1-e1',
+      'got ${media is Map ? media.keys.join(', ') : media}',
+    );
+    _check(
+      'go-live media carries season + episode + TMDB id',
+      media is Map &&
+          media['season'] == 1 &&
+          media['episode'] == 1 &&
+          media['tmdbId'] == 234876,
+      'got season=${media is Map ? media['season'] : null} '
+      'episode=${media is Map ? media['episode'] : null} '
+      'tmdbId=${media is Map ? media['tmdbId'] : null}',
+    );
+  }
+
+  // Room full: the host answers a 6th joiner with a targeted room-full
+  // event naming that phone — only that phone acts on it.
+  _publish(host, topic, {
+    'kind': 'room-full',
+    'targetId': sixthId,
+    'message': 'This room is full — the host already has 5 guests.',
+  });
+  Map<String, dynamic>? roomFull;
+  try {
+    roomFull = await roomFullSeen.future.timeout(
+      const Duration(seconds: 15),
+    );
+  } on TimeoutException {
+    roomFull = null;
+  }
+  _check('6th guest receives the room-full event', roomFull != null);
+  if (roomFull != null) {
+    _check(
+      'room-full names the 6th guest and carries the honest message',
+      roomFull['targetId'] == sixthId &&
+          (roomFull['message'] as String?)?.contains('full') == true,
+      'got ${roomFull['message']}',
+    );
+  }
+
+  try {
+    host.disconnect();
+  } catch (_) {}
+  try {
+    guest.disconnect();
+  } catch (_) {}
+  try {
+    sixth.disconnect();
+  } catch (_) {}
+}
+
 Future<void> main() async {
   print('YumeFlix 2.9.0 live checks (real network, no mocks)');
   print('');
@@ -1202,6 +1533,20 @@ Future<void> main() async {
   } catch (e) {
     _failed++;
     print('  FAIL  Together start flow threw: $e');
+  }
+  print('');
+  try {
+    await _checkLatestRelease();
+  } catch (e) {
+    _failed++;
+    print('  FAIL  Latest-release check threw: $e');
+  }
+  print('');
+  try {
+    await _checkTogetherGuestAutoOpen();
+  } catch (e) {
+    _failed++;
+    print('  FAIL  Together guest auto-open threw: $e');
   }
   print('');
   print('Result: $_passed passed, $_failed failed.');

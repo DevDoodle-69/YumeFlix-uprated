@@ -200,4 +200,52 @@ void main() {
       }
     });
   });
+
+  group('reconnecting state (2.11.0)', () {
+    testWidgets('relay drop shows the honest reconnecting line, not a '
+        'stale room status', (tester) async {
+      final guest = serviceInRoom(TogetherRole.guest);
+      addTearDown(guest.dispose);
+      guest.debugSetReconnectingForTest(true);
+      await pumpWaiting(tester, guest);
+      expect(find.text('Connection lost — reconnecting…'), findsOneWidget);
+      // The last known status is stale the moment the relay drops: it
+      // must not keep saying "Host is still finding a movie…".
+      expect(find.text('Host is still finding a movie…'), findsNothing);
+      // The attempt line says the room re-syncs on its own.
+      expect(find.textContaining('Attempt 1 of 5'), findsOneWidget);
+      expect(find.textContaining('re-syncs automatically'), findsOneWidget);
+      // The picked title still shows: the guest knows what the room
+      // is about while the relay comes back.
+      expect(find.text(movieMedia.title), findsOneWidget);
+      // No red/yellow styling on the reconnecting line either.
+      for (final text in tester.widgetList<Text>(find.byType(Text))) {
+        expect(
+          isRedOrYellow(text.style?.color),
+          isFalse,
+          reason: 'red/yellow text: "${text.data}"',
+        );
+      }
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('stale card shows after 30 s of silence, and hides '
+        'while a reconnect is already running', (tester) async {
+      final guest = serviceInRoom(TogetherRole.guest);
+      addTearDown(guest.dispose);
+      guest.debugSetWaitingStaleForTest(true);
+      await pumpWaiting(tester, guest);
+      expect(find.text('No signal from the host yet'), findsOneWidget);
+
+      // The same stale room, now with the relay being retried: the
+      // reconnecting line replaces the stale card — its Retry would
+      // cancel the loop that is already retrying.
+      guest.debugSetReconnectingForTest(true);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('No signal from the host yet'), findsNothing);
+      expect(find.text('Connection lost — reconnecting…'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
 }

@@ -1,5 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- Legacy storage perms — only relevant on API ≤ 28 (WRITE) and ≤ 32
          (READ). On newer Android we use MediaStore / scoped storage via the

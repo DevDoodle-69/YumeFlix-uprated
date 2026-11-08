@@ -305,7 +305,9 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
         children: [
           Expanded(
             child: Text(
-              'Replying to ${reply.senderLabel}: ${reply.quoteText}',
+              // Replying to a name, not a "Friend": the quoted message's
+              // sender is who typed it (or HOST 👑 for the host).
+              'Replying to ${togetherChatSenderDisplayName(reply, mine: reply.senderId == widget.service.clientId)}: ${reply.quoteText}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
@@ -487,12 +489,20 @@ class _MessageBubble extends StatelessWidget {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    message.senderLabel,
-                    style: TextStyle(
-                      color: textColor.withValues(alpha: 0.8),
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
+                  // 2.11.0: every bubble names its sender — `You` for own
+                  // messages, `HOST 👑` for the room creator, the typed
+                  // name for a guest — so everyone knows who said what.
+                  // Crown + label, never colour alone.
+                  Flexible(
+                    child: Text(
+                      togetherChatSenderDisplayName(message, mine: mine),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: textColor.withValues(alpha: 0.8),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 6),

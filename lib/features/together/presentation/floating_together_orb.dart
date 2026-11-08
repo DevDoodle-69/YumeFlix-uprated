@@ -10,6 +10,7 @@ import '../../../core/providers/device_info_provider.dart';
 import '../../../core/theme/design_tokens.dart';
 import '../together_provider.dart';
 import '../together_service.dart';
+import 'together_member_list.dart';
 import 'together_start_button.dart';
 
 /// The floating "Enjoy Together" orb: the room, always within reach.
@@ -549,6 +550,13 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
                       color: colorScheme.onSurfaceVariant,
                       fontSize: 12,
                     ),
+                  ),
+                  const SizedBox(height: 4),
+                  // 2.11.0: who is in the room, by name — HOST 👑 first,
+                  // then each guest's typed name.
+                  TogetherMemberList(
+                    members: service.members,
+                    ownClientId: service.clientId,
                   ),
                   const SizedBox(height: 4),
                   Text(

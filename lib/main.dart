@@ -15,6 +15,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'core/theme/theme_provider.dart';
 import 'features/together/presentation/floating_together_orb.dart';
+import 'features/together/guest_auto_open.dart';
 import 'core/router/app_router.dart';
 import 'core/theme/app_theme.dart';
 import 'core/storage/storage_service.dart';
@@ -28,6 +29,7 @@ import 'features/extensions/widgets/extensions_sync_bridge.dart';
 import 'core/widgets/app_error_boundary.dart';
 import 'core/services/download_service.dart';
 import 'core/services/notification_service.dart';
+import 'features/update/update_coordinator.dart';
 
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:yumeflix/l10n/generated/app_localizations.dart';
@@ -223,6 +225,17 @@ class _MyAppState extends ConsumerState<MyApp> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(downloadServiceProvider).init();
       unawaited(_loadInstalledExtensions());
+      // --- YumeFlix 2.11.0 in-app updates (Worker C) — begin ---
+      // Fire-and-forget: the coordinator checks GitHub at most once a day,
+      // in the background, and never blocks startup. Dialogs use the root
+      // navigator's context (app_router.dart: rootNavigatorKey).
+      // Worker A: the Together orb mount lives in the builder below.
+      unawaited(
+        UpdateCoordinator.instance.attach(
+          dialogContext: () => rootNavigatorKey.currentContext,
+        ),
+      );
+      // --- YumeFlix 2.11.0 in-app updates (Worker C) — end ---
       // Automatic update polling is intentionally disabled for an offline-first experience.
     });
   }
@@ -397,11 +410,16 @@ class _MyAppState extends ConsumerState<MyApp> {
             // (see the orb itself). One mount means one orb: the shell and
             // the player must not mount their own. Start / chat actions
             // come from the player via the service while one is open.
+            //
+            // The guest auto-open coordinator mounts here too, for the same
+            // reason: it has to watch the room and push the player from
+            // wherever the guest is, and it renders nothing itself.
             result = Stack(
               clipBehavior: Clip.none,
               children: [
                 Positioned.fill(child: result),
                 const FloatingTogetherOrb(),
+                const TogetherGuestAutoOpen(),
               ],
             );
 

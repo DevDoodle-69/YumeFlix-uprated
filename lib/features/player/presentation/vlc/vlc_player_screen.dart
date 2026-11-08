@@ -37,6 +37,7 @@ import '../../domain/buffered_ahead.dart';
 import '../../../../core/logger/app_logger.dart';
 import '../../../together/together_player_hook.dart';
 import '../../../together/together_provider.dart';
+import '../../../together/together_service.dart';
 import '../../../together/presentation/together_chat_panel.dart';
 import '../../domain/network_buffer.dart';
 import '../../domain/smoothness.dart';
@@ -788,6 +789,10 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       media: togetherMediaIdentityFor(
         item: widget.item,
         episode: _currentEpisode,
+        // 2.11.0: a film has no episode, so its episode URL is the URL the
+        // player was opened with — without it the guest could not resolve
+        // the host's exact source for a film.
+        videoUrl: _videoUrl,
       ),
     );
     _togetherHook!.attach();
@@ -922,6 +927,10 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       if (_disposed) return;
       _resolved = resolved;
       _publishPanelData();
+      // 2.11.0 Together guest controls (delimited): the host's chosen
+      // source is now known — report it to the room so the guest opens the
+      // SAME source (see [_reportTogetherSource]).
+      _reportTogetherSource();
       // The race is over. A pick from here on is held for the first open -
       // see [_pickSource].
       _pick = null;
@@ -2520,6 +2529,57 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     );
   }
 
+  // ---- 2.11.0 Together guest controls (delimited) ----
+  //
+  // Everything in this section is the guest side of a Together room:
+  // reporting the host's chosen source to the room, and refusing
+  // guest-only changes (episode, source, language, title) that the UI
+  // already hides. The UI gating lives in [build] (panel tabs, episode
+  // buttons, startup rows); the guards here are defence in depth, so a
+  // path that reaches these methods anyway — a keyboard shortcut, a
+  // stale callback — still cannot move a guest. Worker B owns the
+  // loading / transition state in this file; nothing below touches it.
+
+  /// Reports the stream source this player is actually playing to the
+  /// room, through the hook: the label of the resolved stream at
+  /// [_attemptIndex] (or the resolution's selected index before the first
+  /// attempt). The hook re-publishes the room identity with the source
+  /// when the host is live, so every guest learns the host's pick at once
+  /// and the auto-open coordinator re-opens them on it.
+  ///
+  /// Host only: a guest's own resolution is never reported — the guest's
+  /// identity comes from the host's state, and reporting the guest's
+  /// failover would overwrite it. Called when resolution completes (in
+  /// [_start]) and when the host hand-picks another source (in
+  /// [_pickSource]). Never on automatic failover: a failover stays local
+  /// to the phone that failed over, so one phone's dead source does not
+  /// make every guest reload.
+  void _reportTogetherSource() {
+    final hook = _togetherHook;
+    final resolved = _resolved;
+    if (hook == null || resolved == null) return;
+    // Host only: a guest's own resolution is never reported — the guest's
+    // identity comes from the host's state, and reporting the guest's
+    // failover would overwrite it.
+    if (hook.service.role != TogetherRole.host) return;
+    final streams = resolved.streams;
+    if (streams.isEmpty) return;
+    final index = _attemptIndex >= 0 && _attemptIndex < streams.length
+        ? _attemptIndex
+        : resolved.index;
+    if (index < 0 || index >= streams.length) return;
+    hook.updateSource(streams[index].source);
+  }
+
+  /// True while this viewer is a guest in a live room whose host is still
+  /// there. The guest may pause/play locally, change brightness/volume,
+  /// and chat — everything else (episode, source, language, title) is
+  /// host-only and is refused here as well as hidden in the UI.
+  bool get _togetherGuestLocked =>
+      _togetherHook?.guestControlsLocked ?? false;
+
+  // ---- end 2.11.0 Together guest controls ----
+
   /// Moves off a source that plays but plays badly - failover only reacts to
   /// outright failure.
   ///
@@ -2528,6 +2588,9 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
   /// should walk the failover ladder like any other candidate.
   void _pickSource(int index, {required bool onTrial}) {
     if (_disposed) return;
+    // 2.11.0 guest controls: a guest never changes the server — the panel
+    // and the startup rows hide the choice, and this refuses it outright.
+    if (_togetherGuestLocked) return;
     // Before this resolve has opened anything there is nothing to switch away
     // from, so a pick is this resolve's choice: it ends the probe race if the
     // race is still running, and [_start] opens it either way. Recorded as
@@ -2562,6 +2625,11 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       _attemptRetries = 0;
     }
     unawaited(_openAttempt(index, startAt: at));
+    // 2.11.0 Together guest controls: the host's hand-picked source is
+    // reported to the room at once (the attempt index is already set —
+    // [_openAttempt] sets it synchronously before its first await), so
+    // every guest follows the pick.
+    _reportTogetherSource();
   }
 
   /// A row selected on the startup view.
@@ -2585,6 +2653,9 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
   Future<void> _applyTorrentFile(TorrentFile picked) async {
     final resolved = _resolved;
     if (resolved == null || _disposed) return;
+    // 2.11.0 Together guest controls: picking a different file in the
+    // torrent is a source change — host-only.
+    if (_togetherGuestLocked) return;
     if (picked.index == _torrentFileIndex) return;
 
     final url = await _read(torrentServiceProvider)
@@ -2637,6 +2708,11 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     // outgoing engine delivers its `ended` late, and that call must not raise
     // a card over the episode already loading.
     if (_disposed || _advancing) return _Advance.playing;
+    // 2.11.0 Together guest controls: a guest never advances to the next
+    // episode on their own — the host moves the room, and the guest's
+    // auto-open follows. (A host advance re-shares the new title at
+    // position 0, and the guest switches with it.)
+    if (_togetherGuestLocked) return _Advance.playing;
     _advancing = true;
     try {
       final lookup = nextEpisodeFor(
@@ -2687,6 +2763,8 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
   /// pressed.
   Future<void> _goToPreviousEpisode() async {
     if (_disposed || _advancing) return;
+    // 2.11.0 Together guest controls: episode navigation is host-only.
+    if (_togetherGuestLocked) return;
     final previous = _previousEpisode;
     if (previous == null) return;
     _advancing = true;
@@ -2828,7 +2906,13 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     // episode changed. _currentEpisode (not the raw _episode) so a film
     // never inherits a dummy S1 E1.
     _togetherHook?.retargetMedia(
-      togetherMediaIdentityFor(item: widget.item, episode: _currentEpisode),
+      togetherMediaIdentityFor(
+        item: widget.item,
+        episode: _currentEpisode,
+        // 2.11.0: same as at construction — a film's episode URL is its
+        // open URL, so the re-share keeps the token the guest resolves.
+        videoUrl: _videoUrl,
+      ),
     );
     _publishPanelData();
     // A downloaded episode plays from disk, exactly as the details screen
@@ -2930,7 +3014,16 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     _publishDiscordActivity(value);
     // Together, if a room exists: the host publishes, the guest chases.
     // A no-op while idle, and guarded against its own remote applies.
+    //
+    // 2.11.0: a guest's local pause flips the hook's flag without a service
+    // notify, so the "Paused — play jumps back to the host" pill only
+    // re-reads if this rebuilds on the flip.
+    final wasLocallyPaused = _togetherHook?.guestLocallyPaused ?? false;
     _togetherHook?.onLocalPlayback(value);
+    if ((_togetherHook?.guestLocallyPaused ?? false) != wasLocallyPaused &&
+        mounted) {
+      setState(() {});
+    }
     _syncPlayingState(value);
     _syncOrientation();
     // Ahead of every early return below: a subtitle the media selected for
@@ -3046,6 +3139,29 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       _playedRows.add(_attemptIndex);
       _publishPanelData();
       _setFailReason(null);
+      // Together: this source proved it plays, so it is the host's chosen
+      // server/provider now. A host reports it to the room at once — the
+      // service re-publishes the live state with the source attached, at
+      // the current position (a server pick is not a title change, so
+      // nothing rewinds) — and every guest then resolves this same source
+      // instead of its own default. The service ignores the call for a
+      // guest (guests publish nothing), and reporting the same source
+      // twice is a no-op in attachMedia, so a failover landing back on
+      // the same row — or the hook's own source update — can never
+      // double-publish.
+      final togetherService = _togetherHook?.service;
+      final resolved = _resolved;
+      if (togetherService?.role == TogetherRole.host &&
+          resolved != null &&
+          _attemptIndex >= 0 &&
+          _attemptIndex < resolved.streams.length) {
+        final media = togetherService!.currentMedia;
+        if (media != null) {
+          togetherService.attachMedia(
+            media.withSource(sourceRowLabel(resolved.streams[_attemptIndex])),
+          );
+        }
+      }
       // A new picture, so the bars come up over it for a moment; on a
       // television that is also where focus lands.
       _chrome.poke();
@@ -3166,6 +3282,9 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
   /// time, automatically" must not veto "yes, now, on purpose".
   void _offerNextEpisodeNow() {
     if (_disposed || !mounted) return;
+    // 2.11.0 Together guest controls: the up-next offer is never raised
+    // for a guest — the host decides when the room moves on.
+    if (_togetherGuestLocked) return;
     // The same two guards the automatic path opens with, for the same
     // reasons: an advance in flight already owns the transition and a card
     // raised into it would stand over the episode already loading, and a live
@@ -3719,20 +3838,32 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
                   // Each is null unless the thing it does is actually
                   // available, so the overlay never renders a button that
                   // would do nothing.
-                  onNextEpisode: _hasNextEpisode
+                  //
+                  // 2.11.0 Together guest controls: episode navigation,
+                  // the skip-outro offer and the panel tabs are all
+                  // host-only — a guest gets no such button at all (not a
+                  // dead one), and the method-level guards refuse them
+                  // anyway. Play/pause is NOT null here: it is the guest's
+                  // own (a local pause; play catches up to the host).
+                  onNextEpisode: _hasNextEpisode && !_togetherGuestLocked
                       ? () => unawaited(_advance())
                       : null,
                   // Null on a film and on the first episode, so the bar has no
                   // previous button to render rather than a dead one.
-                  onPreviousEpisode: _previousEpisode == null
+                  onPreviousEpisode:
+                      _previousEpisode == null || _togetherGuestLocked
                       ? null
                       : () => unawaited(_goToPreviousEpisode()),
                   // One panel, one callback: the controls render a button
                   // per tab in [panelTabs] and open the panel on it. The
                   // tabs come from the same helper the panel strip reads, so
                   // a button can never open a tab that does not exist.
+                  // 2.11.0: a guest gets no tabs at all — no sources,
+                  // audio, subtitles, episodes or files to pick from.
                   onOpenPanel: (tab) => _openPanel(tab),
-                  panelTabs: _panelData.value.tabs,
+                  panelTabs: _togetherGuestLocked
+                      ? const <PlayerPanelTab>{}
+                      : _panelData.value.tabs,
                   onEnterPip: _pipAvailable ? _enterPip : null,
                   onToggleFullscreen: _fullscreenAvailable
                       ? _toggleFullscreen
@@ -3743,7 +3874,9 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
                   // Null on a film and on the last episode, where the chip
                   // keeps its plain seek to the end of the credits because
                   // there is nothing to move on to.
-                  onSkipOutro: _hasNextEpisode ? _offerNextEpisodeNow : null,
+                  onSkipOutro: _hasNextEpisode && !_togetherGuestLocked
+                      ? _offerNextEpisodeNow
+                      : null,
                   // The skip chip and the up-next card are both bottom-right
                   // and the card is a later child of this Stack, so without
                   // this the chip stays underneath it: a tap that lands on
@@ -3759,7 +3892,9 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
                   torrentStatus: _torrentStatus,
                   // Together, phone only: the chat button appears while a
                   // room exists, and a guest in a live room gets a locked
-                  // transport — the host owns play/pause/seek.
+                  // transport — the host owns seeks and episode / source /
+                  // language changes, while play/pause stays the guest's
+                  // own (a local pause; play catches up to the host).
                   togetherGuestLocked:
                       _togetherHook?.guestControlsLocked ?? false,
                   onTogetherChat:
@@ -3803,18 +3938,29 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
                   child: IgnorePointer(child: _statusPill(_status)),
                 ),
               // Together overlays, above the chrome and below the ended card:
-              // the guest's "Host controls playback" pill, the wrong-title
-              // hint for a guest who opened a different title, and the glass
-              // chat panel over the video. The floating orb itself is mounted
-              // once, above the router in main.dart — Start and chat reach
-              // this screen through the actions the hook / this screen
-              // register on the service.
+              // the guest's wrong-title hint, the source-fallback notice for
+              // a guest whose host source was unavailable, the guest's
+              // "Host controls playback" pill, and the glass chat panel over
+              // the video. The floating orb itself is mounted once, above
+              // the router in main.dart — Start and chat reach this screen
+              // through the actions the hook / this screen register on the
+              // service.
               if (_togetherHook?.guestNeedsSameTitle ?? false)
                 Align(
                   alignment: Alignment.topCenter,
                   child: Padding(
                     padding: const EdgeInsets.only(top: 96),
                     child: _statusPill(_togetherHook!.guestJoinHint!),
+                  ),
+                ),
+              if (_togetherHook?.guestSourceFallbackNotice != null)
+                Align(
+                  alignment: Alignment.topCenter,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 96),
+                    child: _statusPill(
+                      _togetherHook!.guestSourceFallbackNotice!,
+                    ),
                   ),
                 ),
               if (_togetherHook?.guestControlsLocked ?? false)
@@ -3824,7 +3970,12 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
                     padding: const EdgeInsets.only(top: 56),
                     child: IgnorePointer(
                       child: _statusPill(
-                        'Host controls playback · drift-corrected sync',
+                        // 2.11.0: the pill now says what the guest CAN do —
+                        // pause holds only them, play catches up — because
+                        // the locked transport no longer means "no control".
+                        _togetherHook!.guestLocallyPaused
+                            ? 'Paused — play jumps back to the host'
+                            : 'Host controls playback · pause holds only you',
                       ),
                     ),
                   ),
@@ -3896,7 +4047,9 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
           ? _declinedTitle(l10n, episode)
           : widget.item.title,
       nextLabel: next == null ? null : _nextEpisodeLabel(l10n, next),
-      onNextEpisode: next == null
+      // 2.11.0 Together guest controls: no next-episode button for a
+      // guest — the host decides when the room moves on.
+      onNextEpisode: next == null || _togetherGuestLocked
           ? null
           : () {
               setState(() => _ended = null);
@@ -4022,36 +4175,63 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     final current = _startupCurrentIndex;
     final hasCurrent = current != null && current < sources.length;
     final failed = _stage == _Stage.failed;
+    // Together, opened live as a guest: this player opened because the
+    // host went live, not because this phone picked something. Until the
+    // first frame lands, the loading state says so — "Joining the live
+    // session…" instead of the generic "Loading" — and shows the room's
+    // poster when the title itself has no logo or backdrop, so the guest
+    // never stares at a bare spinner while the stream resolves. A host's
+    // own open, and a guest opening before the host starts, keep the
+    // ordinary loading state: they are not joining anything.
+    final togetherService = _togetherHook?.service;
+    final liveOpened =
+        togetherService?.role == TogetherRole.guest &&
+        (togetherService?.isLive ?? false);
+    final livePosterUrl = liveOpened
+        ? togetherService?.currentMedia?.posterUrl
+        : null;
     return PlayerStartupView(
       key: openingOverlayKey,
       title: widget.item.title,
       episodeLine: _episodeLine(l10n),
-      logoUrl: widget.item.logoUrl,
+      logoUrl: widget.item.logoUrl ?? livePosterUrl,
       backdropUrl: widget.item.backdropImageUrl,
       sourceName:
           _torrentFileLabel ??
           (hasCurrent ? sourceRowLabel(sources[current]) : null),
-      status: _startupStatus(l10n, sources: sources),
+      status: liveOpened && sources.isEmpty
+          ? 'Joining the live session…'
+          : _startupStatus(l10n, sources: sources),
       reason: failed ? null : _failReason,
       attempt: hasCurrent ? (index: current + 1, total: sources.length) : null,
-      rows: <StartupRow>[
-        for (var i = 0; i < sources.length; i++)
-          StartupRow(
-            label: sourceRowLabel(sources[i]),
-            reachability: sourceReachabilityOf(
-              sources[i],
-              _probes[i],
-              hasPlayed: _playedRows.contains(i),
-            ),
-            playState: sourcePlayStateOf(
-              isCurrent: i == current,
-              hasPicture: _sawFrames,
-              failed: _failedRows.contains(i),
-            ),
-          ),
-      ],
+      // 2.11.0 Together guest controls: a guest gets no source rows to
+      // pick from — the host's source is the one playing, and the
+      // startup view is a loading state for them, not a picker. (A guest
+      // opening before the host starts keeps the ordinary rows: they are
+      // not in a live room yet.)
+      rows: _togetherGuestLocked
+          ? const <StartupRow>[]
+          : <StartupRow>[
+              for (var i = 0; i < sources.length; i++)
+                StartupRow(
+                  label: sourceRowLabel(sources[i]),
+                  reachability: sourceReachabilityOf(
+                    sources[i],
+                    _probes[i],
+                    hasPlayed: _playedRows.contains(i),
+                  ),
+                  playState: sourcePlayStateOf(
+                    isCurrent: i == current,
+                    hasPicture: _sawFrames,
+                    failed: _failedRows.contains(i),
+                  ),
+                ),
+            ],
       currentIndex: current,
       failed: failed,
+      // The rows are empty for a guest (above), so there is nothing to
+      // pick — and [_pickFromStartup] routes through [_pickSource], which
+      // refuses a guest outright.
       onPick: _pickFromStartup,
       onBack: _handleBack,
       onRetry: _retry,

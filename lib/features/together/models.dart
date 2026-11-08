@@ -6,11 +6,88 @@
 /// these models are data, not diagnostics.
 library;
 
+/// How many guests one room holds, besides the host (2.11.0). A 6th
+/// joiner is turned away with [kTogetherRoomFullMessage], never a crash.
+const int kTogetherMaxGuests = 5;
+
+/// Longest guest display name, in characters (2.11.0). The join dialog
+/// enforces it in the field; [normalizeTogetherGuestName] enforces it again
+/// at the service boundary, so a long name can never reach the relay.
+const int kTogetherGuestNameMaxLength = 20;
+
+/// Short honest line for a joiner turned away by the guest cap.
+const String kTogetherRoomFullMessage =
+    'This room is full — the host already has 5 guests.';
+
+/// Short honest line when a guest tries to join without a name.
+const String kTogetherGuestNameRequiredMessage =
+    'Type your name to join the room.';
+
+/// Trims a guest display name and caps it at
+/// [kTogetherGuestNameMaxLength]. Empty stays empty (the caller rejects it).
+String normalizeTogetherGuestName(String value) {
+  final trimmed = value.trim();
+  if (trimmed.length <= kTogetherGuestNameMaxLength) return trimmed;
+  return trimmed.substring(0, kTogetherGuestNameMaxLength);
+}
+
+/// Null when [value] is a usable guest name, otherwise the inline error
+/// the join dialog shows (and the join stays disabled).
+String? validateTogetherGuestName(String value) {
+  if (value.trim().isEmpty) return 'Type your name to join.';
+  return null;
+}
+
+/// One phone in a Together room, as the room knows it.
+///
+/// The host is always `HOST 👑` — they never type a name. A guest is their
+/// typed name ([displayName]), never a device name or `Guest 1`.
+class TogetherMember {
+  const TogetherMember({
+    required this.clientId,
+    required this.role,
+    this.displayName,
+  });
+
+  /// MQTT client id of the phone.
+  final String clientId;
+
+  /// `host` or `guest` — the role that phone has in the room.
+  final String role;
+
+  /// The guest's typed name, or null for the host (and for a guest whose
+  /// name never arrived — old clients predate names).
+  final String? displayName;
+
+  /// True for the room creator.
+  bool get isHost => role == 'host';
+
+  /// What the member list and presence show: `HOST 👑` for the host, the
+  /// typed name for a guest, `Guest` when no name is known.
+  String get displayLabel {
+    if (isHost) return 'HOST 👑';
+    final name = displayName?.trim();
+    if (name != null && name.isNotEmpty) return name;
+    return 'Guest';
+  }
+}
+
 /// What the room is watching — enough for the other phone to find the same
 /// title and for the room card to show it, never a stream URL.
 ///
 /// The relay carries identity, not video: each phone resolves its own
 /// playable stream for the title through the normal search/details flow.
+///
+/// 2.11.0 — the identity also carries what the guest needs to open the
+/// SAME source the host chose, not just the same title: [provider] (the
+/// plugin the host resolved from), [itemUrl] (the provider detail URL) and
+/// [episodeUrl] (the episode data URL the host's player handed to
+/// `loadStreams`), plus [source] (the stream-source label the host is
+/// actually playing, e.g. `Server 1`). All four are optional: a 2.10.0 host
+/// publishes none of them, and the guest then falls back to a title search
+/// — the fields are read with `as String?`, so an old payload still parses.
+/// A local file is never shared as [episodeUrl]: it does not exist on the
+/// guest's phone (see `togetherMediaIdentityFor`).
 class TogetherMediaIdentity {
   const TogetherMediaIdentity({
     required this.title,
@@ -18,6 +95,12 @@ class TogetherMediaIdentity {
     this.tmdbId,
     this.posterUrl,
     this.episodeLabel,
+    this.season,
+    this.episode,
+    this.provider,
+    this.itemUrl,
+    this.episodeUrl,
+    this.source,
   });
 
   /// Display title, e.g. `Dune` or `Breaking Bad · S2 E5`. The `· S{n} E{n}`
@@ -39,11 +122,61 @@ class TogetherMediaIdentity {
   /// prints the title must not print the label again as a second line.
   final String? episodeLabel;
 
+  /// Season number of the episode, when the title is one (2.11.0 — so the
+  /// guest picks the episode by number instead of parsing [episodeLabel]).
+  /// Null for films.
+  final int? season;
+
+  /// Episode number within [season], when the title is an episode.
+  /// Null for films.
+  final int? episode;
+
+  /// Provider the host resolved the title from (plugin package name, e.g.
+  /// the value `MultimediaItem.provider` carries), when known. The guest
+  /// asks the same provider first, so the same catalog answers.
+  final String? provider;
+
+  /// Provider detail URL for the title, when known. The guest loads details
+  /// from this instead of searching, so it lands on the host's exact item.
+  final String? itemUrl;
+
+  /// Episode data URL the host is playing — the token the player's stream
+  /// resolver hands to `loadStreams` — when known. The guest resolves
+  /// streams from this same token, so it gets the host's source list.
+  final String? episodeUrl;
+
+  /// Stream-source label the host is actually playing (e.g. `Server 1`),
+  /// when known. The guest puts this source first in its own resolved list
+  /// and plays the best available one only when this label is absent from
+  /// it (see `orderStreamsForHostSource`).
+  final String? source;
+
   /// True when [title] already ends with ` · <episodeLabel>`, so a card
   /// showing the title must not print the label a second time. A series
   /// episode's `S{n} E{n}` then appears exactly once; a film's never does.
   bool get titleCarriesEpisodeLabel =>
       episodeLabel != null && title.endsWith(' · $episodeLabel');
+
+  /// Are these two identities the same title — the same movie, or the same
+  /// episode of the same show?
+  ///
+  /// TMDB id wins when both sides know it, but a show id alone is never
+  /// enough: two episodes of one show share it, so the episode label must
+  /// match too whenever either side carries one. Without ids, the
+  /// normalised title decides (case / surrounding space ignored) — episode
+  /// titles embed their `S/E` suffix, so that comparison already separates
+  /// episodes. The source/provider/URLs deliberately do NOT take part: the
+  /// same title on a different source is still the same title.
+  bool sameTitleAs(TogetherMediaIdentity other) {
+    if (tmdbId != null && other.tmdbId != null) {
+      if (tmdbId != other.tmdbId) return false;
+      if (episodeLabel != null || other.episodeLabel != null) {
+        return episodeLabel == other.episodeLabel;
+      }
+      return true;
+    }
+    return title.trim().toLowerCase() == other.title.trim().toLowerCase();
+  }
 
   Map<String, dynamic> toJson() => <String, dynamic>{
     'title': title,
@@ -51,11 +184,23 @@ class TogetherMediaIdentity {
     if (tmdbId != null) 'tmdbId': tmdbId,
     if (posterUrl != null) 'posterUrl': posterUrl,
     if (episodeLabel != null) 'episodeLabel': episodeLabel,
+    if (season != null) 'season': season,
+    if (episode != null) 'episode': episode,
+    if (provider != null) 'provider': provider,
+    if (itemUrl != null) 'itemUrl': itemUrl,
+    if (episodeUrl != null) 'episodeUrl': episodeUrl,
+    if (source != null) 'source': source,
   };
 
   factory TogetherMediaIdentity.fromJson(Map<String, dynamic> json) {
     final rawTitle = (json['title'] as String?) ?? 'Unknown title';
     final tmdbType = json['tmdbType'] as String?;
+    final season = (json['season'] as num?)?.toInt();
+    final episode = (json['episode'] as num?)?.toInt();
+    final provider = json['provider'] as String?;
+    final itemUrl = json['itemUrl'] as String?;
+    final episodeUrl = json['episodeUrl'] as String?;
+    final source = json['source'] as String?;
     // A movie never carries a season/episode suffix — but 2.8.0's room
     // identity appended a dummy S1 E1 to film titles, and that poisoned
     // title travels over the relay and sits in the persisted last room.
@@ -67,6 +212,10 @@ class TogetherMediaIdentity {
         tmdbType: tmdbType,
         tmdbId: json['tmdbId'] as int?,
         posterUrl: json['posterUrl'] as String?,
+        provider: provider,
+        itemUrl: itemUrl,
+        episodeUrl: episodeUrl,
+        source: source,
       );
     }
     return TogetherMediaIdentity(
@@ -75,8 +224,31 @@ class TogetherMediaIdentity {
       tmdbId: json['tmdbId'] as int?,
       posterUrl: json['posterUrl'] as String?,
       episodeLabel: json['episodeLabel'] as String?,
+      season: season,
+      episode: episode,
+      provider: provider,
+      itemUrl: itemUrl,
+      episodeUrl: episodeUrl,
+      source: source,
     );
   }
+
+  /// Same title with the host's source replaced (see
+  /// `TogetherPlayerHook.updateSource`): a new identity, so the room can
+  /// re-publish it and the guest can follow a host source pick.
+  TogetherMediaIdentity withSource(String? source) => TogetherMediaIdentity(
+    title: title,
+    tmdbType: tmdbType,
+    tmdbId: tmdbId,
+    posterUrl: posterUrl,
+    episodeLabel: episodeLabel,
+    season: season,
+    episode: episode,
+    provider: provider,
+    itemUrl: itemUrl,
+    episodeUrl: episodeUrl,
+    source: source,
+  );
 
   @override
   bool operator ==(Object other) =>
@@ -85,11 +257,28 @@ class TogetherMediaIdentity {
       other.tmdbType == tmdbType &&
       other.tmdbId == tmdbId &&
       other.posterUrl == posterUrl &&
-      other.episodeLabel == episodeLabel;
+      other.episodeLabel == episodeLabel &&
+      other.season == season &&
+      other.episode == episode &&
+      other.provider == provider &&
+      other.itemUrl == itemUrl &&
+      other.episodeUrl == episodeUrl &&
+      other.source == source;
 
   @override
-  int get hashCode =>
-      Object.hash(title, tmdbType, tmdbId, posterUrl, episodeLabel);
+  int get hashCode => Object.hash(
+    title,
+    tmdbType,
+    tmdbId,
+    posterUrl,
+    episodeLabel,
+    season,
+    episode,
+    provider,
+    itemUrl,
+    episodeUrl,
+    source,
+  );
 }
 
 /// The host's playback state, as published (retained) on the room topic.
@@ -105,6 +294,7 @@ class TogetherRoomState {
     required this.hostTimestampMs,
     required this.sequence,
     required this.hostId,
+    this.playbackSpeed = 1.0,
   });
 
   final TogetherMediaIdentity media;
@@ -128,9 +318,20 @@ class TogetherRoomState {
   /// The MQTT client id of the host that published this state.
   final String hostId;
 
-  /// Where the host would be now, if it kept playing from this state.
-  int targetPositionMs({required int nowMs}) =>
-      playing ? positionMs + (nowMs - hostTimestampMs) : positionMs;
+  /// The host's engine speed when the state was stamped (1.0 normally).
+  /// Part of the clock, not a decoration: the target advances at this
+  /// speed ([targetPositionMs]), and the guest's in-sync rate IS this
+  /// speed — a 2x host whose guest chased a 1x target would fall behind
+  /// a second every second and seek forever. 1.0 when absent (a 2.10.0
+  /// host never sends one).
+  final double playbackSpeed;
+
+  /// Where the host would be now, if it kept playing from this state —
+  /// at the host's speed, so a 2x host's target moves twice as fast as
+  /// the wall clock.
+  int targetPositionMs({required int nowMs}) => playing
+      ? positionMs + ((nowMs - hostTimestampMs) * playbackSpeed).round()
+      : positionMs;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
     'media': media.toJson(),
@@ -140,6 +341,7 @@ class TogetherRoomState {
     'hostTimestampMs': hostTimestampMs,
     'sequence': sequence,
     'hostId': hostId,
+    'playbackSpeed': playbackSpeed,
   };
 
   factory TogetherRoomState.fromJson(Map<String, dynamic> json) =>
@@ -153,6 +355,7 @@ class TogetherRoomState {
         hostTimestampMs: (json['hostTimestampMs'] as num?)?.toInt() ?? 0,
         sequence: (json['sequence'] as num?)?.toInt() ?? 0,
         hostId: (json['hostId'] as String?) ?? '',
+        playbackSpeed: (json['playbackSpeed'] as num?)?.toDouble() ?? 1.0,
       );
 }
 
@@ -175,6 +378,8 @@ class TogetherChatMessage {
     this.replyToId,
     this.replyToText,
     required this.timestampMs,
+    this.senderName,
+    this.senderRole,
   });
 
   /// Unique per message: `<senderId>-<millis>-<counter>`.
@@ -202,6 +407,16 @@ class TogetherChatMessage {
   /// Wall-clock milliseconds when the message was sent.
   final int timestampMs;
 
+  /// The sender's typed guest name, when the sender is a guest (2.11.0).
+  /// Null for the host (who is `HOST 👑`) and for messages from clients
+  /// that predate names.
+  final String? senderName;
+
+  /// `host` or `guest` — the sender's role in the room, when known. Null
+  /// for messages from clients that predate names; the panel then falls
+  /// back to [senderLabel].
+  final String? senderRole;
+
   bool get isImage => imageBase64 != null;
 
   /// Short quote for a reply: the text, or `Photo` for an image.
@@ -220,6 +435,8 @@ class TogetherChatMessage {
     if (replyToId != null) 'replyToId': replyToId,
     if (replyToText != null) 'replyToText': replyToText,
     'timestampMs': timestampMs,
+    if (senderName != null) 'senderName': senderName,
+    if (senderRole != null) 'senderRole': senderRole,
   };
 
   factory TogetherChatMessage.fromJson(Map<String, dynamic> json) =>
@@ -232,7 +449,24 @@ class TogetherChatMessage {
         replyToId: json['replyToId'] as String?,
         replyToText: json['replyToText'] as String?,
         timestampMs: (json['timestampMs'] as num?)?.toInt() ?? 0,
+        senderName: json['senderName'] as String?,
+        senderRole: json['senderRole'] as String?,
       );
+}
+
+/// What a chat bubble shows above the text: `You` for own messages,
+/// `HOST 👑` (crown + label, never colour alone) for the room creator,
+/// the typed name for a guest, and the old `Friend` label for messages
+/// from clients that predate names.
+String togetherChatSenderDisplayName(
+  TogetherChatMessage message, {
+  required bool mine,
+}) {
+  if (mine) return 'You';
+  if (message.senderRole == 'host') return 'HOST 👑';
+  final name = message.senderName?.trim();
+  if (name != null && name.isNotEmpty) return name;
+  return message.senderLabel;
 }
 
 /// Live room status, pushed by the host over MQTT.
@@ -255,7 +489,15 @@ enum TogetherRoomStatus {
   hostPlaying,
 
   /// Host pressed Start and playback is paused.
-  hostPaused;
+  hostPaused,
+
+  /// The host left the room (or went silent) — set LOCALLY by the guest
+  /// when it learns the host is gone (`bye`, presence `left`, 8 s of
+  /// silence, member prune). Never published by the host, and never a
+  /// guess about the transport: a stale `hostPlaying`/`hostPaused` after
+  /// the host left is how a waiting screen keeps saying "Host is playing"
+  /// to an empty room. Cleared the moment fresh host traffic arrives.
+  hostLeft;
 
   /// Wire value: the enum name, e.g. `hostBrowsing`.
   String get wireValue => name;
@@ -274,6 +516,7 @@ enum TogetherRoomStatus {
     TogetherRoomStatus.hostPickedTitle => 'Host picked a title',
     TogetherRoomStatus.hostPlaying => 'Host is playing',
     TogetherRoomStatus.hostPaused => 'Host paused',
+    TogetherRoomStatus.hostLeft => 'Host left the room',
   };
 }
 
@@ -340,6 +583,7 @@ class TogetherPresenceEvent {
     required this.role,
     required this.joined,
     required this.timestampMs,
+    this.displayName,
   });
 
   /// MQTT client id of the phone entering / leaving.
@@ -354,12 +598,17 @@ class TogetherPresenceEvent {
   /// Wall-clock milliseconds when the event was published.
   final int timestampMs;
 
+  /// The guest's typed name, when the sender is a guest (2.11.0). Null
+  /// for the host, who is `HOST 👑` without typing a name.
+  final String? displayName;
+
   Map<String, dynamic> toJson() => <String, dynamic>{
     'kind': 'presence',
     'senderId': senderId,
     'role': role,
     'joined': joined,
     'timestampMs': timestampMs,
+    if (displayName != null) 'displayName': displayName,
   };
 
   factory TogetherPresenceEvent.fromJson(Map<String, dynamic> json) =>
@@ -368,6 +617,51 @@ class TogetherPresenceEvent {
         role: (json['role'] as String?) ?? 'guest',
         joined: json['joined'] as bool? ?? true,
         timestampMs: (json['timestampMs'] as num?)?.toInt() ?? 0,
+        displayName: json['displayName'] as String?,
+      );
+}
+
+/// The host turning a joiner away: the room already has
+/// [kTogetherMaxGuests] guests. Carries the rejected phone's client id so
+/// only that phone acts on it — every other phone ignores it.
+class TogetherRoomFullEvent {
+  const TogetherRoomFullEvent({
+    required this.targetId,
+    required this.senderId,
+    required this.timestampMs,
+    this.message = kTogetherRoomFullMessage,
+  });
+
+  /// Client id of the guest being turned away.
+  final String targetId;
+
+  /// MQTT client id of the host that sent the rejection.
+  final String senderId;
+
+  /// Wall-clock milliseconds when the rejection was published.
+  final int timestampMs;
+
+  /// The short honest line the rejected phone shows. Carried on the wire
+  /// so any client — including one that predates the constant — can show
+  /// exactly what the host meant; the app's own guest side still sets its
+  /// error from [kTogetherRoomFullMessage] directly.
+  final String message;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'kind': 'room-full',
+    'targetId': targetId,
+    'senderId': senderId,
+    'timestampMs': timestampMs,
+    'message': message,
+  };
+
+  factory TogetherRoomFullEvent.fromJson(Map<String, dynamic> json) =>
+      TogetherRoomFullEvent(
+        targetId: (json['targetId'] as String?) ?? '',
+        senderId: (json['senderId'] as String?) ?? '',
+        timestampMs: (json['timestampMs'] as num?)?.toInt() ?? 0,
+        message:
+            (json['message'] as String?) ?? kTogetherRoomFullMessage,
       );
 }
 
