@@ -108,6 +108,10 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
     // the floating orb, and only once the host is actually playing the
     // title in the player. The tab's job is creating / joining the room
     // and picking a title — the orb carries the room from there.
+    // The room's text is capped at a 1.3x system text scale: the room code
+    // (40 pt) and the waiting copy have no room to grow into, and an
+    // uncapped scale lets them blow up, clip and overlap the card below.
+    // The waiting state clamps itself again where it is embedded.
     return Scaffold(
       appBar: AppBar(
         title: const Text('Together'),
@@ -124,39 +128,52 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
             ),
         ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 120),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (service.error != null) _errorBanner(service, colorScheme),
-            if (service.reconnecting)
-              _reconnectingBanner(service, colorScheme),
-            if (service.phase == TogetherPhase.idle &&
-                service.lastRoom != null)
-              _rejoinCard(service, colorScheme),
-            if (media != null) ...[
-              _mediaCard(media, colorScheme),
-              const SizedBox(height: 16),
-            ],
-            switch (service.phase) {
-              TogetherPhase.idle => _idleChoices(service),
-              TogetherPhase.error => _idleChoices(service),
-              TogetherPhase.pendingHost => _pendingHostCard(service),
-              TogetherPhase.waitingGuest => _waitingCard(service),
-              TogetherPhase.live => _liveCard(service),
-            },
-            const SizedBox(height: 24),
-            Text(
-              'Low-latency, drift-corrected sync — the guest follows '
-              'the host’s play, pause and seeks. Each phone streams '
-              'the title itself; the room only carries timing and chat.',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: colorScheme.onSurfaceVariant,
+      body: MediaQuery.withClampedTextScaling(
+        maxScaleFactor: 1.3,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 120),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (service.error != null) _errorBanner(service, colorScheme),
+              if (service.reconnecting)
+                _reconnectingBanner(service, colorScheme),
+              if (service.phase == TogetherPhase.idle &&
+                  service.lastRoom != null)
+                _rejoinCard(service, colorScheme),
+              if (media != null) ...[
+                _mediaCard(media, colorScheme),
+                const SizedBox(height: 16),
+              ],
+              switch (service.phase) {
+                TogetherPhase.idle => _idleChoices(service),
+                TogetherPhase.error => _idleChoices(service),
+                TogetherPhase.pendingHost => _pendingHostCard(service),
+                // The waiting state is for the GUEST only. The phase is
+                // role-derived today, but the switch must not be the only
+                // thing standing between a host and the guest's waiting
+                // screen: a host who ever landed here would see "Host is
+                // still finding a movie…" about themselves, over their own
+                // "Waiting for your friend to join" card. A non-guest gets
+                // the host card instead.
+                TogetherPhase.waitingGuest =>
+                  service.role == TogetherRole.guest
+                      ? _waitingCard(service)
+                      : _pendingHostCard(service),
+                TogetherPhase.live => _liveCard(service),
+              },
+              const SizedBox(height: 24),
+              Text(
+                'Low-latency, drift-corrected sync — the guest follows '
+                'the host’s play, pause and seeks. Each phone streams '
+                'the title itself; the room only carries timing and chat.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                textAlign: TextAlign.center,
               ),
-              textAlign: TextAlign.center,
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -303,14 +320,24 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
               children: [
                 Text(
                   media.title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                if (media.episodeLabel != null)
+                // One S/E line, never two: the title already ends with
+                // ` · S{n} E{n}` for a series episode, so the label is
+                // printed only when it adds something the title lacks.
+                // A movie has no label at all (see
+                // togetherMediaIdentityFor), so nothing is printed.
+                if (media.episodeLabel != null &&
+                    !media.titleCarriesEpisodeLabel)
                   Text(
                     media.episodeLabel!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(color: colorScheme.onSurfaceVariant),
                   ),
               ],
@@ -588,6 +615,8 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
           const SizedBox(height: 4),
           Text(
             otp,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: const TextStyle(
               fontSize: 40,
               fontWeight: FontWeight.w800,

@@ -23,6 +23,19 @@ import 'together_start_button.dart';
 /// blur, hairline border, no halo, no pulse), draggable anywhere on screen.
 /// The only motion is a subtle scale on press.
 ///
+/// ONE Start control (2.9.0). There used to be two Start implementations
+/// in this widget — the collapsed pill's own display-only "Start" row and
+/// a [TogetherStartButton] inside the expanded card — and the user saw two
+/// "Start" pills at once in the player. There is now exactly one: the
+/// collapsed pill in the `ready` state IS the [TogetherStartButton] (a
+/// real button, one call site in the whole app), driven by the service's
+/// state machine ([TogetherService.startState]) and by nothing else. The
+/// expanded card never renders a Start button: if the card is open when
+/// the room becomes ready it collapses itself, so the pill is the thing on
+/// screen. The outer [GestureDetector] handles drag and expand/collapse
+/// only — its `onTap` is null while ready, so the button is the sole tap
+/// handler and one tap can never fire Start twice.
+///
 /// Start-button state machine (2.8.0) — decided in one place, the service
 /// ([TogetherService.startState]), never here:
 ///
@@ -46,24 +59,38 @@ import 'together_start_button.dart';
 /// no player open there is no Start at all — the orb never falls back to
 /// opening a title to start.
 ///
+/// ORIENTATION (2.9.0). The player pins landscape at the window level
+/// ([PlayerPlatformService.applyLandscapeOrientation]), so the orb — which
+/// lives above the router, outside the player subtree — is laid out in
+/// window coordinates and its content is always upright: there is no
+/// rotated ancestor to counter-rotate against, and none is introduced
+/// here. What rotation DID break was the pill's *position*: one saved
+/// screen fraction was reused across orientations, so a fraction saved in
+/// portrait landed on the seek bar / centre controls in landscape, and
+/// the old fixed 64 px top clamp let the pill cover the room code and the
+/// player's top status pills. The pill is now clamped every build — and
+/// every drag — into an orientation-specific band: the top band (app bar,
+/// room code, player status pills) is reserved, the bottom band (nav bar
+/// in portrait, seek bar / transport in landscape) is reserved, and the
+/// safe-area insets are honoured, so the pill can never cover primary
+/// content in either orientation. The expanded card is height-capped and
+/// scrollable, so it fits a short landscape window instead of covering it.
+///
 /// The position is a screen fraction kept in [TogetherService] for the
 /// session and persisted to SharedPreferences, so it survives rotation,
-/// app restarts and different screen sizes.
+/// app restarts and different screen sizes. The fraction is re-interpreted
+/// through the current orientation's band on every build, so a position
+/// saved in portrait is clamped into the landscape band (and back) rather
+/// than landing on the controls.
 ///
 /// Tap toggles the expanded card, EXCEPT while ready, where a tap is the
 /// Start itself: live room status (a real MQTT fact), the picked title,
 /// the room code with copy, who is in the room, and the actions that make
-/// sense right now — Start (host, in the player, while playing), Pick a
-/// title (host, while browsing), Chat (in the player) and Leave.
+/// sense right now — Pick a title (host, while browsing), Chat (in the
+/// player) and Leave.
 ///
 /// TV never sees it: [DeviceProfile.isTv] hides Together entirely, the
 /// same rule that hides the 5th nav tab (`showTogether: !profile.isTv`).
-///
-/// Mount once per route that needs it, as a direct child of a [Stack]:
-/// the coordinator mounts one in AppScaffold (home / browse) and one in
-/// the player Stack (see the integration snippet in the 2.6.0 report).
-/// Two mounts never exist at the same time — the player route sits above
-/// the shell — so the orb is never doubled.
 class FloatingTogetherOrb extends ConsumerStatefulWidget {
   const FloatingTogetherOrb({this.onStart, this.onOpenChat, super.key});
 
@@ -84,14 +111,32 @@ class FloatingTogetherOrb extends ConsumerStatefulWidget {
 }
 
 class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
-  static const Offset _kDefaultFraction = Offset(0.72, 0.78);
+  static const Offset _kDefaultFractionPortrait = Offset(0.72, 0.78);
+
+  /// Landscape default: right edge, in the free middle band — clear of
+  /// the top status pills and of the seek bar / transport below.
+  static const Offset _kDefaultFractionLandscape = Offset(0.86, 0.45);
+
   static const double _kCollapsedWidth = 212;
   static const double _kExpandedWidth = 300;
 
-  Offset _fraction = _kDefaultFraction;
+  /// Portrait: app bar + room-code / title area. Landscape: the player's
+  /// top status pills. The pill's top edge never goes above this band.
+  static const double _kReservedTopPortrait = 120;
+  static const double _kReservedTopLandscape = 96;
+
+  /// Portrait: bottom nav bar + margin. Landscape: the bottom chrome
+  /// (seek bar + transport, [HotstarPlayerStyle.bottomChromeHeight]).
+  /// The pill's bottom edge never goes below this band.
+  static const double _kReservedBottomPortrait = 96;
+  static const double _kReservedBottomLandscape = 152;
+
+  Offset _fraction = _kDefaultFractionPortrait;
+  bool _hasPosition = false;
   bool _expanded = false;
   bool _dragMoved = false;
   bool _pressed = false;
+  bool _collapseScheduled = false;
 
   @override
   void initState() {
@@ -101,7 +146,11 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
       await service.loadOrbPosition();
       if (!mounted) return;
       setState(() {
-        _fraction = service.orbPositionFraction ?? _kDefaultFraction;
+        final saved = service.orbPositionFraction;
+        if (saved != null) {
+          _fraction = saved;
+          _hasPosition = true;
+        }
       });
     });
   }
@@ -113,6 +162,54 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
     );
   }
 
+  /// The pixel band the pill's top-left corner may sit in, for the current
+  /// orientation and the pill size actually rendered. The top band (room
+  /// code / status pills) and the bottom band (nav bar / seek bar) are
+  /// reserved, and the safe-area insets are honoured on every edge, so a
+  /// drag can never park the pill over primary content.
+  ({double left, double top, double right, double bottom}) _orbBounds(
+    Size size,
+    EdgeInsets padding,
+    Orientation orientation,
+    double pillWidth,
+    double pillHeight,
+  ) {
+    final left = padding.left + 8;
+    final right = math.max(left, size.width - padding.right - 8 - pillWidth);
+    final top = orientation == Orientation.landscape
+        ? padding.top + _kReservedTopLandscape
+        : padding.top + _kReservedTopPortrait;
+    final reservedBottom = orientation == Orientation.landscape
+        ? _kReservedBottomLandscape
+        : _kReservedBottomPortrait;
+    final bottom = math.max(
+      top,
+      size.height - padding.bottom - reservedBottom - pillHeight,
+    );
+    return (left: left, top: top, right: right, bottom: bottom);
+  }
+
+  Offset _clampFraction(
+    Offset fraction,
+    Size size,
+    EdgeInsets padding,
+    Orientation orientation,
+    double pillWidth,
+    double pillHeight,
+  ) {
+    final bounds = _orbBounds(size, padding, orientation, pillWidth, pillHeight);
+    return Offset(
+      (fraction.dx * size.width)
+          .clamp(bounds.left, bounds.right)
+          .toDouble() /
+          size.width,
+      (fraction.dy * size.height)
+          .clamp(bounds.top, bounds.bottom)
+          .toDouble() /
+          size.height,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final service = ref.watch(togetherServiceProvider);
@@ -120,7 +217,10 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
         ref.watch(deviceProfileProvider).asData?.value.isTv ?? false;
     if (!service.isSessionActive || isTv) return const SizedBox.shrink();
 
-    final size = MediaQuery.sizeOf(context);
+    final media = MediaQuery.of(context);
+    final size = media.size;
+    final orientation = media.orientation;
+    final padding = media.padding;
     // The ready / live pills are compact run / status chips, much
     // narrower than the browsing pill — the drag clamp uses the width
     // actually rendered, so a narrow pill can still reach the screen edge.
@@ -130,24 +230,77 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
       _ => _kCollapsedWidth,
     };
     final width = _expanded ? _kExpandedWidth : collapsedWidth;
-    final left = (_fraction.dx * size.width)
-        .clamp(8.0, math.max(8.0, size.width - width - 8.0))
-        .toDouble();
-    final top = (_fraction.dy * size.height)
-        .clamp(64.0, math.max(64.0, size.height - (_expanded ? 340.0 : 150.0)))
-        .toDouble();
+    // The expanded card is height-capped (see below), so its drag height
+    // is the capped height, never the full 340 dp of content.
+    final height = _expanded
+        ? math.min(340.0, size.height - padding.vertical - 24)
+        : 48.0;
+    // The saved fraction is re-interpreted through this orientation's
+    // band on every build: a position saved in portrait is clamped into
+    // the landscape band (and back), never left sitting on the controls.
+    // With no saved position yet, each orientation starts from its own
+    // default instead of inheriting the other one's.
+    final baseFraction = _hasPosition
+        ? _fraction
+        : orientation == Orientation.landscape
+        ? _kDefaultFractionLandscape
+        : _kDefaultFractionPortrait;
+    final clampedFraction = _clampFraction(
+      baseFraction,
+      size,
+      padding,
+      orientation,
+      width,
+      height,
+    );
+    final bounds = _orbBounds(size, padding, orientation, width, height);
+    final left = clampedFraction.dx * size.width;
+    final top = clampedFraction.dy * size.height;
+
+    final isReady = service.startState == TogetherStartState.ready;
+    // The card must not stay open over the Start pill: the pill is the
+    // only Start control, so an open card in the ready state collapses
+    // itself on the next frame and the pill is what the host sees.
+    if (_expanded && isReady && !_collapseScheduled) {
+      _collapseScheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _collapseScheduled = false;
+        if (!mounted) return;
+        final current = ref.read(togetherServiceProvider);
+        if (_expanded &&
+            current.startState == TogetherStartState.ready) {
+          setState(() => _expanded = false);
+        }
+      });
+    }
 
     return Positioned(
-      left: left,
-      top: top,
+      left: left.clamp(bounds.left, bounds.right).toDouble(),
+      top: top.clamp(bounds.top, bounds.bottom).toDouble(),
       child: GestureDetector(
         onPanStart: (_) => _dragMoved = false,
         onPanUpdate: (details) {
           if (details.delta.distance > 2) _dragMoved = true;
+          // Drag from where the pill actually is: with no saved position
+          // yet that is the orientation's default, not the other
+          // orientation's.
+          final base = _hasPosition
+              ? _fraction
+              : orientation == Orientation.landscape
+              ? _kDefaultFractionLandscape
+              : _kDefaultFractionPortrait;
           setState(() {
-            _fraction = Offset(
-              (_fraction.dx + details.delta.dx / size.width).clamp(0.0, 1.0),
-              (_fraction.dy + details.delta.dy / size.height).clamp(0.0, 1.0),
+            _hasPosition = true;
+            _fraction = _clampFraction(
+              Offset(
+                base.dx + details.delta.dx / size.width,
+                base.dy + details.delta.dy / size.height,
+              ),
+              size,
+              padding,
+              orientation,
+              width,
+              height,
             );
           });
         },
@@ -157,20 +310,16 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
         onTapDown: (_) => setState(() => _pressed = true),
         onTapUp: (_) => setState(() => _pressed = false),
         onTapCancel: () => setState(() => _pressed = false),
-        onTap: () {
-          if (_dragMoved) return;
-          // Ready: the collapsed pill IS the Start button — a tap goes
-          // live at once instead of opening the card. goLive flips the
-          // phase to live synchronously, so the button vanishes in the
-          // same rebuild and the Live indicator takes its place.
-          if (!_expanded &&
-              service.startState == TogetherStartState.ready) {
-            final onStart = widget.onStart ?? service.orbStartAction;
-            onStart?.call();
-            return;
-          }
-          setState(() => _expanded = !_expanded);
-        },
+        // While ready the pill IS the Start button (a real InkWell
+        // inside [TogetherStartButton]) and the sole tap handler: a null
+        // onTap here means no competing recogniser, so one tap fires
+        // Start exactly once. Otherwise a tap toggles the card.
+        onTap: isReady
+            ? null
+            : () {
+                if (_dragMoved) return;
+                setState(() => _expanded = !_expanded);
+              },
         // 2.7.0: no breathing pulse, no halo — a subtle press scale only,
         // over a plain black drop shadow from the glass itself.
         child: AnimatedScale(
@@ -217,7 +366,19 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
     // only while the movie is playing.
     switch (service.startState) {
       case TogetherStartState.ready:
-        return _startRunPill();
+        // THE Start button — the single one in the app. Tapping it goes
+        // live at once; goLive flips the phase to live synchronously, so
+        // the button vanishes in the same rebuild and the Live indicator
+        // takes its place. No second Start lives anywhere else. The action
+        // is resolved at tap time, not build time: the player hook
+        // registers its goLive on the service while a player is open, and
+        // the button must use the action current at the tap.
+        return TogetherStartButton(
+          onPressed: () {
+            final onStart = widget.onStart ?? service.orbStartAction;
+            onStart?.call();
+          },
+        );
       case TogetherStartState.live:
         return _livePill();
       case TogetherStartState.hidden:
@@ -281,43 +442,6 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
     );
   }
 
-  /// The compact Start run button (2.8.0): a small dark pill — raised
-  /// near-black fill, hairline border, muted slate-blue play icon, white
-  /// 13 pt "Start". No red, no underline, no glow. The tap itself is
-  /// handled by the outer [GestureDetector] (a tap while ready goes live
-  /// instead of expanding), so this is display only — no nested button
-  /// to fight the drag recogniser.
-  Widget _startRunPill() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-      decoration: BoxDecoration(
-        color: YumeDesign.surfaceRaised,
-        borderRadius: YumeDesign.pillRadius,
-        border: Border.all(color: YumeDesign.hairlineStrong),
-      ),
-      child: const Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            Icons.play_arrow_rounded,
-            size: 18,
-            color: YumeDesign.accentLight,
-          ),
-          SizedBox(width: 6),
-          Text(
-            'Start',
-            style: TextStyle(
-              color: YumeDesign.textPrimary,
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              decoration: TextDecoration.none,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   /// The tiny live indicator that replaces the Start button the moment
   /// the room goes live: a slate-blue dot + "Live", same dark pill, same
   /// neutral palette. Tapping it expands the card (chat, code, Leave).
@@ -362,187 +486,197 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
     final isHost = service.role == TogetherRole.host;
     final isPendingHost =
         isHost && service.phase == TogetherPhase.pendingHost;
-    // Start is offered only while the room is actually ready: a title
-    // picked, a player open, and the movie playing. A host who expanded
-    // the card while browsing sees a neutral hint instead of a Start
-    // button they cannot use yet — never a start prompt over a paused or
-    // absent player.
-    final canStart =
-        isPendingHost &&
-        media != null &&
-        service.startState == TogetherStartState.ready;
-    // Start / chat actions: the player registers them on the service while
-    // it is open; the widget's own callbacks override (tests, direct
-    // mounts). No player open means no engine to go live from, so there
-    // is no Start at all until a player is open and playing.
-    final onStart = widget.onStart ?? service.orbStartAction;
+    // No Start button lives in this card any more (2.9.0): the collapsed
+    // pill is the single Start control, and the card collapses itself
+    // when the room becomes ready. A host who expanded the card while
+    // browsing sees a neutral hint instead — never a second Start.
+    final isReady = service.startState == TogetherStartState.ready;
+    // Chat action: the player registers it on the service while it is
+    // open; the widget's own callback overrides (tests, direct mounts).
     final onOpenChat = widget.onOpenChat ?? service.orbOpenChatAction;
+    final mediaQuery = MediaQuery.of(context);
     return _glass(
       context,
       SizedBox(
         width: _kExpandedWidth,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            // A short landscape window cannot hold the whole card: cap
+            // it and scroll, instead of covering the picture.
+            maxHeight: math.max(
+              200.0,
+              mediaQuery.size.height - mediaQuery.padding.vertical - 24,
+            ),
+          ),
+          child: SingleChildScrollView(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(Icons.group_rounded, size: 20),
-                  const SizedBox(width: 8),
-                  const Expanded(
-                    child: Text(
-                      'Enjoy Together',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                  InkWell(
-                    borderRadius: BorderRadius.circular(16),
-                    onTap: () => setState(() => _expanded = false),
-                    child: const Padding(
-                      padding: EdgeInsets.all(4),
-                      child: Icon(Icons.keyboard_arrow_down_rounded, size: 20),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              // Live status: a real MQTT fact, never a local guess.
-              Text(
-                service.reconnecting
-                    ? 'Reconnecting to the Together relay…'
-                    : service.roomStatus.label,
-                style: TextStyle(color: colorScheme.onSurfaceVariant),
-              ),
-              if (media != null) ...[
-                const SizedBox(height: 6),
-                Text(
-                  media.title,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-              ],
-              const SizedBox(height: 4),
-              Text(
-                service.presenceLabel,
-                style: TextStyle(
-                  color: colorScheme.onSurfaceVariant,
-                  fontSize: 12,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                // Relay + measured latency, straight off the service.
-                service.connectionStatusLabel,
-                style: TextStyle(
-                  color: colorScheme.onSurfaceVariant,
-                  fontSize: 12,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  // The code chip flexes: on a narrow card (or a wide test
-                  // font) the chip ellipsises instead of pushing the Copy
-                  // button out of the card.
-                  Flexible(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: colorScheme.primary.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        'Room $otp',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: colorScheme.primary,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 2,
+                  Row(
+                    children: [
+                      const Icon(Icons.group_rounded, size: 20),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text(
+                          'Enjoy Together',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
+                      InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () => setState(() => _expanded = false),
+                        // 44 dp hit target for the collapse chevron.
+                        child: const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            size: 20,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  // Live status: a real MQTT fact, never a local guess.
+                  Text(
+                    service.reconnecting
+                        ? 'Reconnecting to the Together relay…'
+                        : service.roomStatus.label,
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                  if (media != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      media.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ],
+                  const SizedBox(height: 4),
+                  Text(
+                    service.presenceLabel,
+                    style: TextStyle(
+                      color: colorScheme.onSurfaceVariant,
+                      fontSize: 12,
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  OutlinedButton.icon(
-                    onPressed: () => _copyOtp(otp),
-                    icon: const Icon(Icons.copy_rounded, size: 16),
-                    label: const Text('Copy'),
+                  const SizedBox(height: 4),
+                  Text(
+                    // Relay + measured latency, straight off the service.
+                    service.connectionStatusLabel,
+                    style: TextStyle(
+                      color: colorScheme.onSurfaceVariant,
+                      fontSize: 12,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      // The code chip flexes: on a narrow card (or a wide test
+                      // font) the chip ellipsises instead of pushing the Copy
+                      // button out of the card.
+                      Flexible(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: colorScheme.primary.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            'Room $otp',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: colorScheme.primary,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 2,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton.icon(
+                        onPressed: () => _copyOtp(otp),
+                        icon: const Icon(Icons.copy_rounded, size: 16),
+                        label: const Text('Copy'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (isReady)
+                    const Text(
+                      'Playing — tap Start on the floating pill to go live.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: YumeDesign.textSecondary,
+                        decoration: TextDecoration.none,
+                      ),
+                    )
+                  else if (isPendingHost && media != null)
+                    const Text(
+                      'Play the movie first — the Start button appears once '
+                      'it’s playing.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: YumeDesign.textSecondary,
+                        decoration: TextDecoration.none,
+                      ),
+                    )
+                  else if (isPendingHost)
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: () {
+                          setState(() => _expanded = false);
+                          context.go('/search');
+                        },
+                        icon: const Icon(Icons.search_rounded),
+                        label: const Text('Pick a title to watch'),
+                      ),
+                    )
+                  else if (service.phase == TogetherPhase.waitingGuest)
+                    const Text(
+                      'Playback starts automatically when the host presses Start.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  if (onOpenChat != null) ...[
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: () {
+                          setState(() => _expanded = false);
+                          onOpenChat.call();
+                        },
+                        icon: const Icon(Icons.chat_bubble_outline_rounded),
+                        label: const Text('Open chat'),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 4),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () {
+                        setState(() => _expanded = false);
+                        ref.read(togetherServiceProvider).leaveRoom();
+                      },
+                      child: const Text('Leave room'),
+                    ),
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
-              if (canStart && onStart != null)
-                Center(
-                  child: TogetherStartButton(
-                    onPressed: () {
-                      setState(() => _expanded = false);
-                      onStart.call();
-                    },
-                  ),
-                )
-              else if (isPendingHost && media != null)
-                const Text(
-                  'Play the movie first — the Start button appears once '
-                  'it’s playing.',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: YumeDesign.textSecondary,
-                    decoration: TextDecoration.none,
-                  ),
-                )
-              else if (isPendingHost)
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: () {
-                      setState(() => _expanded = false);
-                      context.go('/search');
-                    },
-                    icon: const Icon(Icons.search_rounded),
-                    label: const Text('Pick a title to watch'),
-                  ),
-                )
-              else if (service.phase == TogetherPhase.waitingGuest)
-                const Text(
-                  'Playback starts automatically when the host presses Start.',
-                  style: TextStyle(fontSize: 12),
-                ),
-              if (onOpenChat != null) ...[
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      setState(() => _expanded = false);
-                      onOpenChat.call();
-                    },
-                    icon: const Icon(Icons.chat_bubble_outline_rounded),
-                    label: const Text('Open chat'),
-                  ),
-                ),
-              ],
-              const SizedBox(height: 4),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: () {
-                    setState(() => _expanded = false);
-                    ref.read(togetherServiceProvider).leaveRoom();
-                  },
-                  child: const Text('Leave room'),
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),

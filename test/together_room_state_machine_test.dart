@@ -297,8 +297,7 @@ void main() {
       // registered, and the room goes live from it. Expand the pill first
       // (its label is 'Enjoy Together' while browsing — there is no
       // 'Ready to start' anywhere), then open the player (register the
-      // Start action), pick the title and press play: only then does the
-      // compact 'Start' button appear in the card.
+      // Start action), pick the title and press play.
       await tester.tap(find.text('Enjoy Together'));
       await tester.pump();
       expect(find.text('Pick a title to watch'), findsOneWidget);
@@ -320,6 +319,11 @@ void main() {
         playing: true,
       );
       await tester.pump();
+      await tester.pump(); // post-frame collapse of the card
+      // 2.9.0: the card never renders a Start button — it collapses
+      // itself when the room becomes ready, and the collapsed pill is
+      // the single Start control in the app.
+      expect(find.text('Pick a title to watch'), findsNothing);
       expect(find.text('Start'), findsOneWidget);
       await tester.tap(find.text('Start'));
       await tester.pump();

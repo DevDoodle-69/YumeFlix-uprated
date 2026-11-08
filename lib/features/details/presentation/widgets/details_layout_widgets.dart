@@ -463,10 +463,12 @@ class SliverDetailsDesktopEpisodeGrid extends ConsumerWidget {
         SliverLayoutBuilder(
           builder: (context, constraints) {
             final double crossAxisExtent = constraints.crossAxisExtent;
-            final int crossAxisCount = (crossAxisExtent / 480).ceil().clamp(
-              1,
-              5,
-            );
+            final int crossAxisCount =
+                ResponsiveBreakpoints.gridColumnsForWidth(
+                  crossAxisExtent,
+                  minItemWidth: 480,
+                  maxColumns: 5,
+                );
             final int rowCount = (displayedEpisodes.length / crossAxisCount)
                 .ceil();
 
@@ -968,10 +970,12 @@ class DetailsDesktopEpisodeColumn extends ConsumerWidget {
         LayoutBuilder(
           builder: (context, constraints) {
             final double crossAxisExtent = constraints.maxWidth;
-            final int crossAxisCount = (crossAxisExtent / 480).ceil().clamp(
-              1,
-              5,
-            );
+            final int crossAxisCount =
+                ResponsiveBreakpoints.gridColumnsForWidth(
+                  crossAxisExtent,
+                  minItemWidth: 480,
+                  maxColumns: 5,
+                );
             final int rowCount = (displayedEpisodes.length / crossAxisCount)
                 .ceil();
 

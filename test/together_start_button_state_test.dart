@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:yumeflix/features/together/models.dart';
 import 'package:yumeflix/features/together/presentation/floating_together_orb.dart';
+import 'package:yumeflix/features/together/presentation/together_start_button.dart';
 import 'package:yumeflix/features/together/together_provider.dart';
 import 'package:yumeflix/features/together/together_service.dart';
 
@@ -277,6 +278,123 @@ void main() {
       play(service);
       await tester.pump();
       expect(find.text('Start'), findsOneWidget);
+    });
+  });
+
+  group('single Start control + landscape orb (2.9.0)', () {
+    Future<void> pumpOrb2(WidgetTester tester, TogetherService service) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            togetherServiceProvider.overrideWith((ref) => service),
+          ],
+          child: const MaterialApp(
+            home: Scaffold(
+              body: Stack(
+                children: <Widget>[
+                  Placeholder(),
+                  FloatingTogetherOrb(),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    testWidgets('exactly one Start in the live player — never two',
+        (tester) async {
+      final service = hostReadyToPlay();
+      var goLiveCalls = 0;
+      service.registerOrbStartAction(() {
+        goLiveCalls++;
+        service.goLive(positionMs: 0, durationMs: 600000, playing: true);
+      });
+      await pumpOrb2(tester, service);
+      play(service);
+      await tester.pump();
+
+      // One Start pill, and it is the real button (TogetherStartButton) —
+      // the expanded card renders no second one.
+      expect(find.text('Start'), findsOneWidget);
+      expect(find.byType(TogetherStartButton), findsOneWidget);
+
+      await tester.tap(find.text('Start'));
+      await tester.pump();
+
+      // One tap fires Start exactly once, and the button is gone.
+      expect(goLiveCalls, 1);
+      expect(find.text('Start'), findsNothing);
+      expect(find.byType(TogetherStartButton), findsNothing);
+      expect(find.text('Live'), findsOneWidget);
+    });
+
+    testWidgets(
+        'an open card collapses when the room becomes ready — '
+        'the pill is the only Start', (tester) async {
+      final service = hostReadyToPlay();
+      await pumpOrb2(tester, service);
+      // Browsing: tap the neutral pill to expand the card.
+      await tester.tap(find.text('Enjoy Together'));
+      await tester.pump();
+      expect(find.text('Room 123456'), findsOneWidget);
+      expect(find.text('Start'), findsNothing);
+
+      // Playback starts: the card collapses itself; exactly one Start.
+      play(service);
+      await tester.pump();
+      await tester.pump(); // post-frame collapse
+      expect(find.text('Room 123456'), findsNothing);
+      expect(find.text('Start'), findsOneWidget);
+      expect(find.byType(TogetherStartButton), findsOneWidget);
+    });
+
+    testWidgets(
+        'landscape: the Start pill stays a small horizontal pill, '
+        'clear of the top band and the seek bar', (tester) async {
+      tester.view.physicalSize = const Size(800, 360);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final service = hostReadyToPlay();
+      await pumpOrb2(tester, service);
+      play(service);
+      await tester.pump();
+
+      final pill = tester.getRect(find.byType(TogetherStartButton));
+      // Horizontal: wider than tall, compact. (The test font renders
+      // wider than a real one, so the cap is generous.)
+      expect(pill.width, greaterThan(pill.height));
+      expect(pill.width, lessThanOrEqualTo(160));
+      // Below the reserved top band (status pills / room code).
+      expect(pill.top, greaterThanOrEqualTo(96));
+      // Above the bottom chrome (seek bar + transport, 108 dp).
+      expect(pill.bottom, lessThanOrEqualTo(360 - 108));
+    });
+
+    testWidgets(
+        'portrait: dragging cannot park the pill over the top band '
+        'or below the nav bar', (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final service = hostReadyToPlay();
+      await pumpOrb2(tester, service);
+      play(service);
+      await tester.pump();
+
+      final pillFinder = find.byType(TogetherStartButton);
+      // Drag hard upward: the pill stops at the reserved top band.
+      await tester.drag(pillFinder, const Offset(0, -600));
+      await tester.pump();
+      expect(tester.getTopLeft(pillFinder).dy, greaterThanOrEqualTo(120));
+      // Drag hard downward: the pill stops above the bottom band.
+      await tester.drag(pillFinder, const Offset(0, 900));
+      await tester.pump();
+      final rect = tester.getRect(pillFinder);
+      expect(rect.bottom, lessThanOrEqualTo(844 - 96));
     });
   });
 }

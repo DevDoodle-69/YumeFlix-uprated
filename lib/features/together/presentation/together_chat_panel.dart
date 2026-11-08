@@ -144,10 +144,18 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
 
     return Align(
       alignment: Alignment.centerRight,
-      child: Padding(
-        padding: const EdgeInsets.only(right: 12, top: 12, bottom: 12),
-        child: SizedBox(
-          width: panelWidth,
+      // Safe area below the composer: in landscape the gesture bar /
+      // system bar sits under the panel, and the input row must stay
+      // above it. A no-op while the player hides the system UI.
+      child: SafeArea(
+        top: false,
+        left: false,
+        right: false,
+        bottom: true,
+        child: Padding(
+          padding: const EdgeInsets.only(right: 12, top: 12, bottom: 12),
+          child: SizedBox(
+            width: panelWidth,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(20),
             child: BackdropFilter(
@@ -206,6 +214,7 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
           ),
         ),
       ),
+    ),
     );
   }
 

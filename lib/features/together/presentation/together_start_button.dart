@@ -14,6 +14,16 @@ import '../../../core/theme/design_tokens.dart';
 /// room goes live and the button vanishes, replaced by the tiny Live
 /// indicator; pausing or leaving the player hides it again until
 /// playback resumes.
+///
+/// The single Start control in the app (2.9.0): the floating orb's
+/// collapsed pill in the `ready` state IS this widget, and no other
+/// Start button exists anywhere — the orb's expanded card never renders
+/// one. Keep it that way: a second Start is how the user ended up seeing
+/// two at once in the player.
+///
+/// The pill looks compact but its hit target is a full 44 dp tall
+/// (13 dp vertical padding around the 18 dp icon), so it is tappable
+/// without being big.
 class TogetherStartButton extends StatelessWidget {
   const TogetherStartButton({required this.onPressed, super.key});
 
@@ -30,7 +40,7 @@ class TogetherStartButton extends StatelessWidget {
           onTap: onPressed,
           borderRadius: YumeDesign.pillRadius,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
             decoration: BoxDecoration(
               color: YumeDesign.surfaceRaised,
               borderRadius: YumeDesign.pillRadius,

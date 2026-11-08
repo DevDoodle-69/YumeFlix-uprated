@@ -128,7 +128,11 @@ class _ViewAllScreenState extends ConsumerState<ViewAllScreen> {
         ? (_isPortrait ? 240.0 : 340.0)
         : (_isPortrait ? 150.0 : 220.0);
     final screenWidth = MediaQuery.sizeOf(context).width;
-    final crossAxisCount = (screenWidth / maxExtent).ceil();
+    final crossAxisCount = ResponsiveBreakpoints.gridColumnsForWidth(
+      screenWidth,
+      minItemWidth: maxExtent,
+      maxColumns: 8,
+    );
     final childAspectRatio = _isPortrait ? 0.55 : 1.35;
 
     ref.listen(viewAllControllerProvider(widget.category), (previous, next) {

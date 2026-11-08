@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:vlc_player/vlc_player.dart';
 
 import '../../core/domain/entity/multimedia_item.dart';
+import '../../core/services/discord_presence_service.dart';
 import 'models.dart';
 import 'sync_math.dart';
 import 'together_service.dart';
@@ -28,12 +29,19 @@ class TogetherPlayerHook {
   TogetherPlayerHook({
     required this.service,
     required this.controller,
-    required this.media,
-  });
+    required TogetherMediaIdentity media,
+  }) : _media = media;
 
   final TogetherService service;
   final VlcPlayerController controller;
-  final TogetherMediaIdentity media;
+
+  /// The title this playback is — the room's identity for it. Mutable
+  /// because the player re-shares on an episode change without rebuilding
+  /// the hook: [retargetMedia] moves it and the room with it.
+  TogetherMediaIdentity _media;
+
+  /// The title this playback is, for the room and the guest checks.
+  TogetherMediaIdentity get media => _media;
 
   bool _attached = false;
 
@@ -104,10 +112,24 @@ class TogetherPlayerHook {
   }
 
   /// Same title? TMDB id wins when both sides know it; otherwise the
-  /// normalised title (case / surrounding space ignored).
-  static bool _sameTitle(TogetherMediaIdentity a, TogetherMediaIdentity b) {
-    if (a.tmdbId != null && b.tmdbId != null) return a.tmdbId == b.tmdbId;
-    return a.title.trim().toLowerCase() == b.title.trim().toLowerCase();
+  /// normalised title (case / surrounding space ignored). A show id alone
+  /// is never enough: two episodes of one show share it, so the episode
+  /// label must match too whenever either side carries one — otherwise a
+  /// guest on S1 E1 is told they are on the same title as a host on S1 E2
+  /// and syncs into the wrong episode.
+  static bool _sameTitle(TogetherMediaIdentity a, TogetherMediaIdentity b) =>
+      togetherSameTitle(a, b);
+
+  /// Re-points this hook at a new title — the episode advance / previous /
+  /// pick path in the player screen. The room follows in the same step:
+  /// [TogetherService.attachMedia] re-publishes the live state under the
+  /// new title at position 0 when live, or updates the pending title when
+  /// still browsing. A no-op when the title did not change, so a
+  /// re-resolve of the same episode never re-shares and never rewinds.
+  void retargetMedia(TogetherMediaIdentity media) {
+    if (media == _media) return;
+    _media = media;
+    service.attachMedia(media);
   }
 
   void attach() {
@@ -256,11 +278,42 @@ class TogetherPlayerHook {
   }
 }
 
+/// Are two room identities the same title — the same movie, or the same
+/// episode of the same show?
+///
+/// TMDB id wins when both sides know it, but a show id alone is never
+/// enough: two episodes of one show share it, so the episode label must
+/// match too whenever either side carries one. Without ids, the
+/// normalised title decides (case / surrounding space ignored) — episode
+/// titles embed their `S/E` suffix, so that comparison already separates
+/// episodes. Public so tests can pin the episode rule without an engine.
+bool togetherSameTitle(TogetherMediaIdentity a, TogetherMediaIdentity b) {
+  if (a.tmdbId != null && b.tmdbId != null) {
+    if (a.tmdbId != b.tmdbId) return false;
+    if (a.episodeLabel != null || b.episodeLabel != null) {
+      return a.episodeLabel == b.episodeLabel;
+    }
+    return true;
+  }
+  return a.title.trim().toLowerCase() == b.title.trim().toLowerCase();
+}
+
 /// Builds the room's media identity from the title the player opened.
 ///
 /// The same composition the Discord presence uses (episode posters first,
 /// then the item's poster, then its banner), so the room card and the
 /// presence agree about what is playing.
+///
+/// The title itself reuses the one title rule
+/// ([DiscordPresenceService.formatWatchingTitle]): `· S{n} E{n}` only for a
+/// true series/anime episode with real numbering. A film never gets a
+/// suffix — plugins file a movie as a one-episode show, so the episode the
+/// player was opened with is usually a dummy S1 E1, and passing it straight
+/// through used to print "Harry Potter … · S1 E1" on the room card (plus a
+/// second "S1 E1" line from [TogetherMediaIdentity.episodeLabel]). The
+/// player screen already gates its own titles the same way (see its
+/// `_currentEpisode`, which is null for films); this hook takes the raw
+/// route episode, so the gate has to live here too.
 TogetherMediaIdentity togetherMediaIdentityFor({
   required MultimediaItem item,
   Episode? episode,
@@ -268,9 +321,17 @@ TogetherMediaIdentity togetherMediaIdentityFor({
   final isSeries =
       item.contentType == MultimediaContentType.series ||
       item.contentType == MultimediaContentType.anime;
-  final title = episode == null
-      ? item.title
-      : '${item.title} · S${episode.season} E${episode.episode}';
+  final title = DiscordPresenceService.formatWatchingTitle(
+    title: item.title,
+    isSeries: isSeries,
+    season: episode?.season,
+    episode: episode?.episode,
+  );
+  final season = episode?.season ?? 0;
+  final episodeNumber = episode?.episode ?? 0;
+  final episodeLabel = isSeries && season > 0 && episodeNumber > 0
+      ? 'S$season E$episodeNumber'
+      : null;
   String? poster;
   for (final candidate in <String?>[
     episode?.posterUrl,
@@ -288,8 +349,6 @@ TogetherMediaIdentity togetherMediaIdentityFor({
     tmdbType: isSeries ? 'tv' : 'movie',
     tmdbId: item.tmdbId,
     posterUrl: poster,
-    episodeLabel: episode == null
-        ? null
-        : 'S${episode.season} E${episode.episode}',
+    episodeLabel: episodeLabel,
   );
 }

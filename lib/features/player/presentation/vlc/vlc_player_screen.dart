@@ -772,10 +772,16 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     // Attached even when no room exists yet: a guest can join a room while
     // already watching the title, and the hook picks the session up the
     // moment it appears. Cheap when idle — attachMedia is a no-op then.
+    // _currentEpisode, not the raw _episode: a film's dummy S1 E1 episode
+    // must never become the room title, and a series opened without an
+    // explicit episode still resolves to the episode its URL names.
     _togetherHook = TogetherPlayerHook(
       service: ref.read(togetherServiceProvider),
       controller: _controller,
-      media: togetherMediaIdentityFor(item: widget.item, episode: _episode),
+      media: togetherMediaIdentityFor(
+        item: widget.item,
+        episode: _currentEpisode,
+      ),
     );
     _togetherHook!.attach();
     // The single root-mounted orb reads its chat action from the service
@@ -2808,6 +2814,15 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     _setStatus('');
 
     _episode = next;
+    // The room follows the episode in the same step: a live host
+    // re-shares the new episode at position 0, a pending host updates the
+    // picked title. Without this the hook kept the first episode's
+    // identity for the whole session and the guest never learned the
+    // episode changed. _currentEpisode (not the raw _episode) so a film
+    // never inherits a dummy S1 E1.
+    _togetherHook?.retargetMedia(
+      togetherMediaIdentityFor(item: widget.item, episode: _currentEpisode),
+    );
     _publishPanelData();
     // A downloaded episode plays from disk, exactly as the details screen
     // does when it launches the first one.

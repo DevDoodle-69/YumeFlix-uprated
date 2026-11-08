@@ -37,7 +37,11 @@
 //   6. Together start flow over the live broker: room created, guest sees
 //      the host browsing with NO go-live state yet, then the host going
 //      live publishes a retained playing state the guest receives, and a
-//      title change re-shares the new title at position 0.
+//      title change re-shares the new title at position 0. (2.9.0: the
+//      go-live title shape is checked too — a movie's state carries the
+//      bare title with no `S{n} E{n}` suffix and no episode label, while a
+//      series episode's state carries the exact `· S1 E1` title and label,
+//      so the guest opens the same title the host started.)
 //
 // Exit code 0 = every check passed. Exit code 1 = at least one failed
 // (the failing check prints why). No credentials, no tokens, no writes.
@@ -943,6 +947,8 @@ Future<void> _checkTogetherStartFlow() async {
   final states = <Map<String, dynamic>>[];
   final liveStateSeen = Completer<Map<String, dynamic>>();
   final reshareSeen = Completer<Map<String, dynamic>>();
+  final movieStateSeen = Completer<Map<String, dynamic>>();
+  final episodeStateSeen = Completer<Map<String, dynamic>>();
   guest.subscribe(topic, MqttQos.atLeastOnce);
   guest.updates!.listen((events) {
     for (final event in events) {
@@ -968,6 +974,18 @@ Future<void> _checkTogetherStartFlow() async {
           }
           if (gotTitle == nextTitle && !reshareSeen.isCompleted) {
             reshareSeen.complete(decoded);
+          }
+          // 2.9.0 title-shape checks: a movie go-live carries the bare
+          // title (no S/E suffix, no episode label); a series go-live
+          // carries the exact episode title and label.
+          if (decoded['playing'] == true &&
+              gotTitle == 'Dune' &&
+              !movieStateSeen.isCompleted) {
+            movieStateSeen.complete(decoded);
+          }
+          if (gotTitle == 'Dexter: Resurrection · S1 E1' &&
+              !episodeStateSeen.isCompleted) {
+            episodeStateSeen.complete(decoded);
           }
         }
       } catch (_) {}
@@ -1059,6 +1077,80 @@ Future<void> _checkTogetherStartFlow() async {
     );
   }
 
+  // 2.9.0 title shape on go-live: the exact payloads the app publishes
+  // when the host presses Start on a movie and on a series episode.
+  // The movie's title must be bare — a dummy S1 E1 must never leak onto
+  // it — and the episode's title must carry the exact S/E.
+  // `host` is non-null here (the null case returned above), but a local
+  // function cannot see that promotion — bind it once, then close over it.
+  final MqttServerClient liveHost = host;
+  Future<Map<String, dynamic>?> waitForState(
+    Completer<Map<String, dynamic>> seen,
+    Map<String, dynamic> payload,
+  ) async {
+    for (var attempt = 0; attempt < 3 && !seen.isCompleted; attempt++) {
+      _publish(liveHost, topic, payload, retain: true);
+      try {
+        return await seen.future.timeout(const Duration(seconds: 3));
+      } on TimeoutException {
+        // The public relay occasionally drops a single publish; retry.
+      }
+    }
+    return seen.isCompleted ? await seen.future : null;
+  }
+
+  final movieState = await waitForState(movieStateSeen, {
+    'kind': 'state',
+    'media': {'title': 'Dune', 'tmdbType': 'movie'},
+    'positionMs': 5000,
+    'durationMs': 600000,
+    'playing': true,
+    'hostTimestampMs': DateTime.now().millisecondsSinceEpoch,
+    'sequence': 3,
+    'hostId': hostId,
+  });
+  _check('guest receives the movie go-live state', movieState != null);
+  if (movieState != null) {
+    final movieMedia = movieState['media'];
+    final movieTitle = movieMedia is Map
+        ? movieMedia['title'] as String?
+        : null;
+    _check(
+      'movie go-live title is bare — no S/E suffix, no episode label',
+      movieTitle == 'Dune' &&
+          (movieMedia is Map
+              ? movieMedia['episodeLabel'] == null
+              : false),
+      'got "$movieTitle"',
+    );
+  }
+
+  final episodeState = await waitForState(episodeStateSeen, {
+    'kind': 'state',
+    'media': {
+      'title': 'Dexter: Resurrection · S1 E1',
+      'tmdbType': 'tv',
+      'episodeLabel': 'S1 E1',
+    },
+    'positionMs': 14000,
+    'durationMs': 3084000,
+    'playing': true,
+    'hostTimestampMs': DateTime.now().millisecondsSinceEpoch,
+    'sequence': 4,
+    'hostId': hostId,
+  });
+  _check('guest receives the episode go-live state', episodeState != null);
+  if (episodeState != null) {
+    final episodeMedia = episodeState['media'];
+    _check(
+      'episode go-live title carries the exact S/E',
+      episodeMedia is Map &&
+          episodeMedia['title'] == 'Dexter: Resurrection · S1 E1' &&
+          episodeMedia['episodeLabel'] == 'S1 E1',
+      'got "${episodeMedia is Map ? episodeMedia['title'] : null}"',
+    );
+  }
+
   try {
     host.disconnect();
   } catch (_) {}
@@ -1068,7 +1160,7 @@ Future<void> _checkTogetherStartFlow() async {
 }
 
 Future<void> main() async {
-  print('YumeFlix 2.8.0 live checks (real network, no mocks)');
+  print('YumeFlix 2.9.0 live checks (real network, no mocks)');
   print('');
   try {
     await _checkTogether();

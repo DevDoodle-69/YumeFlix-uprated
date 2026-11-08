@@ -29,6 +29,36 @@ class ResponsiveBreakpoints {
 
   static bool isTabletOrLarger(BuildContext context) =>
       getDeviceType(context) != DeviceScreenType.mobile;
+
+  /// How many columns a grid gets at [width], from the narrowest item it
+  /// may show — the one rule every grid in the app follows, instead of
+  /// each screen re-deriving its own count. [minItemWidth] is the
+  /// narrowest usable card; [maxColumns] caps the count so an ultra-wide
+  /// window does not stretch into unreadable columns. Identical to the
+  /// `(width / minItemWidth).ceil()` each grid used to compute inline.
+  static int gridColumnsForWidth(
+    double width, {
+    required double minItemWidth,
+    int maxColumns = 12,
+  }) {
+    if (width <= 0 || minItemWidth <= 0) return 1;
+    return (width / minItemWidth).ceil().clamp(1, maxColumns);
+  }
+
+  /// Horizontal page inset for [width]: phone 16, tablet 20, desktop 24 —
+  /// the same step the settings screens' centred columns use.
+  static double pagePaddingForWidth(double width) =>
+      width >= desktopBreakpoint
+      ? 24
+      : width >= tabletBreakpoint
+      ? 20
+      : 16;
+
+  /// The widest a centred reading column may get at [width], or null on a
+  /// phone where content spans the screen. Tablet and desktop centre at
+  /// 800, the width the settings screens already use inline.
+  static double? maxContentWidthForWidth(double width) =>
+      width >= tabletBreakpoint ? 800 : null;
 }
 
 extension ResponsiveContext on BuildContext {

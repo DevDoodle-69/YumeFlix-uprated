@@ -81,183 +81,270 @@ class _TogetherGuestWaitingStateState
   @override
   Widget build(BuildContext context) {
     final service = widget.service;
+    // Guest only, at the widget itself — not just at the call site. A host
+    // must never see "Host is still finding a movie…" about themselves:
+    // the host's own screen already says "Waiting for your friend to join",
+    // and this state rendered over it is the giant overlapping overlay the
+    // host reported. Any caller that shows this widget to a host gets
+    // nothing instead.
+    if (service.role != TogetherRole.guest) {
+      return const SizedBox.shrink();
+    }
     final colorScheme = Theme.of(context).colorScheme;
     final media = service.currentMedia;
     final hostGone = service.hostGone;
     final stale = service.waitingStale;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        // Static monochrome circle: the waiting screen is calm, not a
-        // spinner — no breathing, no shadow. The pulsing dots below are
-        // the only motion.
-        Center(
-          child: Container(
-            width: 76,
-            height: 76,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: YumeDesign.surfaceRaised,
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.16),
-                width: 1,
-              ),
-            ),
-            child: const Icon(
-              Icons.group_rounded,
-              size: 34,
-              color: Colors.white,
-            ),
-          ),
-        ),
-        const SizedBox(height: 16),
-        if (hostGone) ...[
-          const Text(
-            'Host left the room',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 6),
-          const Text(
-            'You’re watching on your own now, from the last synced position. '
-            'Ask the host for a new code to start again.',
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 14),
-          OutlinedButton(
-            onPressed: widget.onLeave,
-            child: const Text('Leave room'),
-          ),
-        ] else ...[
-          Text(
-            // The live status, straight off the wire.
-            service.roomStatus.label,
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 8),
-          const Center(child: _PulsingDots()),
-          const SizedBox(height: 8),
-          Text(
-            _elapsed(),
-            textAlign: TextAlign.center,
-            style: TextStyle(color: colorScheme.onSurfaceVariant),
-          ),
-          if (media != null) ...[
-            const SizedBox(height: 14),
-            Container(
-              padding: const EdgeInsets.all(12),
+    // Bounded by construction: the text scale is capped (a large system
+    // font scale must not blow the waiting copy up past the card), every
+    // line has an explicit small size in white/grey on dark — no red, no
+    // yellow, no underline, no giant font — and every line that can grow
+    // ellipsises instead of overflowing or overlapping the card below.
+    return MediaQuery.withClampedTextScaling(
+      maxScaleFactor: 1.3,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Static monochrome circle: the waiting screen is calm, not a
+          // spinner — no breathing, no shadow. The pulsing dots below are
+          // the only motion.
+          Center(
+            child: Container(
+              width: 76,
+              height: 76,
               decoration: BoxDecoration(
+                shape: BoxShape.circle,
                 color: YumeDesign.surfaceRaised,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.12),
-                ),
-              ),
-              child: Row(
-                children: [
-                  if (media.posterUrl != null)
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.network(
-                        media.posterUrl!,
-                        width: 40,
-                        height: 60,
-                        fit: BoxFit.cover,
-                        errorBuilder: (context, _, _) =>
-                            const SizedBox(width: 40, height: 60),
-                      ),
-                    ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Host picked',
-                          style: TextStyle(fontSize: 12),
-                        ),
-                        Text(
-                          media.title,
-                          style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        if (media.episodeLabel != null)
-                          Text(media.episodeLabel!),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-          const SizedBox(height: 12),
-          Text(
-            service.presenceLabel,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: colorScheme.onSurfaceVariant,
-              fontSize: 12,
-            ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Keep this screen open — playback starts automatically when '
-            'the host presses Start.',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12),
-          ),
-          if (stale) ...[
-            const SizedBox(height: 14),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.06),
-                borderRadius: BorderRadius.circular(14),
                 border: Border.all(
                   color: Colors.white.withValues(alpha: 0.16),
+                  width: 1,
                 ),
               ),
-              child: Column(
-                children: [
-                  const Text(
-                    'No signal from the host yet',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'Check the room code, or ask the host to re-open '
-                    'Together — the relay may have dropped.',
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: FilledButton(
-                          onPressed: widget.onRetry,
-                          child: const Text('Retry'),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: widget.onLeave,
-                          child: const Text('Leave'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+              child: const Icon(
+                Icons.group_rounded,
+                size: 34,
+                color: Colors.white,
               ),
             ),
+          ),
+          const SizedBox(height: 16),
+          if (hostGone) ...[
+            const Text(
+              'Host left the room',
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
+                decoration: TextDecoration.none,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'You’re watching on your own now, from the last synced position. '
+              'Ask the host for a new code to start again.',
+              textAlign: TextAlign.center,
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 14,
+                color: colorScheme.onSurfaceVariant,
+                decoration: TextDecoration.none,
+              ),
+            ),
+            const SizedBox(height: 14),
+            OutlinedButton(
+              onPressed: widget.onLeave,
+              child: const Text('Leave room'),
+            ),
+          ] else ...[
+            Text(
+              // The live status, straight off the wire.
+              service.roomStatus.label,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
+                decoration: TextDecoration.none,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Center(child: _PulsingDots()),
+            const SizedBox(height: 8),
+            Text(
+              _elapsed(),
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 14,
+                color: colorScheme.onSurfaceVariant,
+                decoration: TextDecoration.none,
+              ),
+            ),
+            if (media != null) ...[
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: YumeDesign.surfaceRaised,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.12),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    if (media.posterUrl != null)
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.network(
+                          media.posterUrl!,
+                          width: 40,
+                          height: 60,
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, _, _) =>
+                              const SizedBox(width: 40, height: 60),
+                        ),
+                      ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Host picked',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: YumeDesign.textSecondary,
+                              decoration: TextDecoration.none,
+                            ),
+                          ),
+                          Text(
+                            media.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white,
+                              decoration: TextDecoration.none,
+                            ),
+                          ),
+                          // One S/E line, never two: the title already
+                          // ends with ` · S{n} E{n}` for a series episode.
+                          if (media.episodeLabel != null &&
+                              !media.titleCarriesEpisodeLabel)
+                            Text(
+                              media.episodeLabel!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: colorScheme.onSurfaceVariant,
+                                decoration: TextDecoration.none,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Text(
+              service.presenceLabel,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: colorScheme.onSurfaceVariant,
+                fontSize: 12,
+                decoration: TextDecoration.none,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Keep this screen open — playback starts automatically when '
+              'the host presses Start.',
+              textAlign: TextAlign.center,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.white70,
+                decoration: TextDecoration.none,
+              ),
+            ),
+            if (stale) ...[
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.06),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.16),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    const Text(
+                      'No signal from the host yet',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                        decoration: TextDecoration.none,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Check the room code, or ask the host to re-open '
+                      'Together — the relay may have dropped.',
+                      maxLines: 4,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white70,
+                        decoration: TextDecoration.none,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: widget.onRetry,
+                            child: const Text('Retry'),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: widget.onLeave,
+                            child: const Text('Leave'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
         ],
-      ],
+      ),
     );
   }
 }

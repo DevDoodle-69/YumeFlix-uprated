@@ -11,8 +11,6 @@ class HotstarPlayerStyle {
   // 2.7.0: one muted slate-blue accent, shared with the rest of the app
   // (see YumeDesign.accent). No bright blue, no magenta.
   static const Color accent = Color(0xFF6B84A0);
-  static const Color hotstar = Color(0xFF6B84A0);
-  static const Color accentAlt = Color(0xFF6B84A0);
   static const Color primaryText = Color(0xF2FFFFFF);
   static const Color secondaryText = Color(0xA6FFFFFF);
 

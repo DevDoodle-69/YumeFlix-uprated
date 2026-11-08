@@ -1,3 +1,31 @@
+# YumeFlix 2.9.0 — Together bugs fixed from the user's screen recording + full UI quality pass
+
+### Bug 1 — giant broken waiting overlay: guest-only, bounded, never giant
+- Root cause: the guest waiting card had no role gate at the widget layer and no bounds (no text-scale clamp, no maxLines/overflow on any line), so it could render over the host's own screen and explode at large text scales. No widget in the app renders red text with a yellow underline — the literal renderer was not found in code, and the overlay does not appear in any sampled frame of the recording; what was proven and closed is the wrong-audience path and the unbounded rendering.
+- Fixed: the waiting state returns nothing unless the viewer is the guest (widget + screen both gate on role), the whole card is clamped to 1.3x text scale, every line is explicit small white/grey on dark with maxLines + ellipsis, no red, no yellow, no underline. The orb's expanded card carries the same role gate and bounds.
+
+### Bug 2 — movie showed "S1 E1" again: single title rule everywhere
+- Root cause: `togetherMediaIdentityFor` in the player hook built the Together title with `· S{season} E{episode}` unconditionally, fed by a dummy season-1/episode-1 episode the details controller files for movies. The room card showed the suffix twice (title + a second S/E line).
+- Fixed: the Together title now comes from the single shared rule (`formatWatchingTitle` — S/E only for true series/anime with season > 0 and episode > 0); poisoned 2.8.0 relay/persisted payloads are sanitised at the wire boundary; the room card shows S/E exactly once for series and never for movies. Same rule also applied to Home continue-watching/synced cards and library downloads rows, which rendered S/E with no movie gate.
+
+### Bug 3 — duplicate Start buttons: one Start control, one source of truth
+- Root cause: the orb had two distinct Start implementations (the collapsed pill's own Start row and a `TogetherStartButton` inside the expanded card), driven by different tap paths.
+- Fixed: the collapsed pill in `ready` IS the `TogetherStartButton` — the only Start control in the app. The expanded card never renders Start; if it is open when the room becomes ready it collapses itself so the pill is what's on screen. One tap fires Start exactly once.
+
+### Bug 4 — orb in landscape: stays horizontal, stays out of the way
+- Root cause: there is no rotated subtree in the app (the player pins landscape at window level), so the vertical pill in the recording is a whole-frame rotation artefact — but the real defect was position: one saved screen fraction was reused across orientations, the top clamp was a fixed 64 px, and the bottom clamp ignored the seek bar, so the pill could land on the seek bar, centre controls, or the room code.
+- Fixed: orientation-specific placement bands applied on every build and every drag, safe-area aware (portrait top 120 dp, landscape top 96 dp; landscape bottom 152 dp reserved for seek bar + transport); separate landscape default position; drag clamped so the pill can never cover the room code or primary content. Expanded card is height-capped and scrollable in short landscape windows.
+
+### Confirmed Start flow (movie + series): tap, vanish, both play together
+- Host taps Start on the floating widget: the button vanishes in the same synchronous step and Together playback starts for both at the same time — the guest receives the retained playing state for the same title and position. For series the shared title is the exact episode the host is playing (same-show episode matching now compares episode labels too, not just the show id); changing episode re-shares cleanly at position 0 (the hook now retargets on every episode advance). Note: the guest's player does not auto-open on Start yet — the guest opens the title via the existing "find this title" action; that is a deliberate navigation decision left for a follow-up.
+
+### UI quality + responsiveness pass (all screens)
+- One typography scale, consistent spacing/alignment, 44-48 dp touch targets, consistent card/corner/chip treatment. Loading states are neutral skeletons (search now shows poster + text shimmer rows instead of a bare spinner); error states are short, honest, minimal. Text never clips/overflows at normal font sizes; safe-area/margin handling in portrait and landscape.
+- Responsive: shared grid-column rule (`gridColumnsForWidth`) reused in details episode grids and view-all; layouts reflow across phone portrait/landscape, tablet, and TV instead of clipping. Dead code removed (unused player chat button, unused player-style aliases). Minimal professional language kept throughout (near-black neutrals, grey text, one muted slate-blue accent, no neon, no glow).
+
+### Live verification
+- `tools/live_check.dart`: 45/45 passed, including new checks — movie go-live title is bare ("Dune", no S/E), episode go-live title carries the exact S/E ("Dexter: Resurrection · S1 E1"), re-share starts at position 0. Full test suite 230/230, `flutter analyze` 0 errors/warnings.
+
 # YumeFlix 2.8.0 — Together, perfected: host control, no latency, 5 MB chat photos
 
 ### Enjoy Together — the priority: professional, accurate, no latency

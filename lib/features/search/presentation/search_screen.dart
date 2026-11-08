@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/utils/layout_constants.dart';
 import '../../../core/utils/responsive_breakpoints.dart';
 import '../../../shared/widgets/no_results_state.dart';
+import '../../../shared/widgets/shimmer_placeholder.dart';
 import 'search_history_provider.dart';
 import 'search_provider.dart';
 import '../../../l10n/generated/app_localizations.dart';
@@ -570,7 +571,6 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
   Widget _buildResultsView(BuildContext context) {
     final searchResultsAsync = ref.watch(searchResultsProvider);
-    final l10n = AppLocalizations.of(context)!;
 
     return searchResultsAsync.when(
       data: (state) {
@@ -579,7 +579,9 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
         if (allResults.isEmpty && !state.isLoading) {
           return _buildEmptyState(context);
         } else if (allResults.isEmpty && state.isLoading) {
-          return const Center(child: AppLoadingIndicator());
+          // Skeleton in the results' own shape, never a bare spinner on a
+          // blank screen: the viewer sees where results will land.
+          return _buildResultsSkeleton();
         }
 
         // RepaintBoundary isolates list repaints from the rest of the
@@ -602,9 +604,74 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
           ),
         );
       },
-      loading: () => const Center(child: AppLoadingIndicator()),
-      error: (err, stack) =>
-          Center(child: Text(l10n.errorPrefix(err.toString()))),
+      loading: () => _buildResultsSkeleton(),
+      // Short and honest, never the raw exception: the viewer gets what
+      // happened and a way back, not a stack trace.
+      error: (err, stack) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.cloud_off_rounded, size: 32),
+              const SizedBox(height: 12),
+              const Text(
+                'Search failed — try again in a moment.',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              FilledButton(
+                onPressed: () => _submitSearch(_controller.text),
+                child: Text(AppLocalizations.of(context)!.retry),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Skeleton rows in the results' own shape (poster + two text lines),
+  /// in the same neutral shimmer the home and explore rails use.
+  Widget _buildResultsSkeleton() {
+    return ListView.builder(
+      padding: const EdgeInsets.only(bottom: 100),
+      itemCount: 6,
+      itemBuilder: (context, index) {
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ShimmerPlaceholder.rectangular(
+                width: 56,
+                height: 84,
+                borderRadius: 8,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 4),
+                    ShimmerPlaceholder.rectangular(
+                      width: MediaQuery.sizeOf(context).width * 0.5,
+                      height: 14,
+                      borderRadius: 4,
+                    ),
+                    const SizedBox(height: 8),
+                    ShimmerPlaceholder.rectangular(
+                      width: 120,
+                      height: 12,
+                      borderRadius: 4,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 

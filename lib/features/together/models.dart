@@ -20,7 +20,9 @@ class TogetherMediaIdentity {
     this.episodeLabel,
   });
 
-  /// Display title, e.g. `Dune` or `Breaking Bad · S2 E5`.
+  /// Display title, e.g. `Dune` or `Breaking Bad · S2 E5`. The `· S{n} E{n}`
+  /// suffix appears only for a true series/anime episode with real
+  /// numbering; a movie title never carries one.
   final String title;
 
   /// TMDB media type when known: `movie` or `tv`.
@@ -32,8 +34,16 @@ class TogetherMediaIdentity {
   /// Poster URL for the room card. May be an extension poster.
   final String? posterUrl;
 
-  /// e.g. `S2 E5`, when the title is an episode.
+  /// e.g. `S2 E5`, when the title is an episode. Null for films, and null
+  /// whenever [title] already ends with ` · <episodeLabel>` — a card that
+  /// prints the title must not print the label again as a second line.
   final String? episodeLabel;
+
+  /// True when [title] already ends with ` · <episodeLabel>`, so a card
+  /// showing the title must not print the label a second time. A series
+  /// episode's `S{n} E{n}` then appears exactly once; a film's never does.
+  bool get titleCarriesEpisodeLabel =>
+      episodeLabel != null && title.endsWith(' · $episodeLabel');
 
   Map<String, dynamic> toJson() => <String, dynamic>{
     'title': title,
@@ -43,14 +53,30 @@ class TogetherMediaIdentity {
     if (episodeLabel != null) 'episodeLabel': episodeLabel,
   };
 
-  factory TogetherMediaIdentity.fromJson(Map<String, dynamic> json) =>
-      TogetherMediaIdentity(
-        title: (json['title'] as String?) ?? 'Unknown title',
-        tmdbType: json['tmdbType'] as String?,
+  factory TogetherMediaIdentity.fromJson(Map<String, dynamic> json) {
+    final rawTitle = (json['title'] as String?) ?? 'Unknown title';
+    final tmdbType = json['tmdbType'] as String?;
+    // A movie never carries a season/episode suffix — but 2.8.0's room
+    // identity appended a dummy S1 E1 to film titles, and that poisoned
+    // title travels over the relay and sits in the persisted last room.
+    // Strip it at the boundary so an old host's payload (or a stale
+    // rejoin snapshot) cannot resurrect "Film · S1 E1" on this phone.
+    if (tmdbType == 'movie') {
+      return TogetherMediaIdentity(
+        title: rawTitle.replaceFirst(RegExp(r' · S\d+ E\d+$'), ''),
+        tmdbType: tmdbType,
         tmdbId: json['tmdbId'] as int?,
         posterUrl: json['posterUrl'] as String?,
-        episodeLabel: json['episodeLabel'] as String?,
       );
+    }
+    return TogetherMediaIdentity(
+      title: rawTitle,
+      tmdbType: tmdbType,
+      tmdbId: json['tmdbId'] as int?,
+      posterUrl: json['posterUrl'] as String?,
+      episodeLabel: json['episodeLabel'] as String?,
+    );
+  }
 
   @override
   bool operator ==(Object other) =>
