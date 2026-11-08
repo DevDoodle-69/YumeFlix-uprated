@@ -11,9 +11,9 @@ import '../../../core/theme/design_tokens.dart';
 /// while the service says the room is ready
 /// ([TogetherService.startState] == `ready`): a title picked, a player
 /// open, and the movie actually playing. The moment it is tapped the
-/// room goes live and the button vanishes, replaced by the tiny Live
-/// indicator; pausing or leaving the player hides it again until
-/// playback resumes.
+/// room goes live and the button vanishes, replaced by the Live indicator
+/// in the player control panel (never a floating pill — 2.10.0, Bug 1);
+/// pausing or leaving the player hides it again until playback resumes.
 ///
 /// The single Start control in the app (2.9.0): the floating orb's
 /// collapsed pill in the `ready` state IS this widget, and no other

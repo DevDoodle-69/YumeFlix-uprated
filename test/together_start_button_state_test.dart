@@ -125,7 +125,8 @@ void main() {
       expect(host.startState, TogetherStartState.ready);
     });
 
-    test('going live -> live; Start never comes back while live', () {
+    test('going live -> live while playing; pausing or leaving the '
+        'player hides the Live state (phase stays live)', () {
       final host = hostReadyToPlay();
       addTearDown(host.dispose);
       play(host);
@@ -133,14 +134,30 @@ void main() {
 
       host.goLive(positionMs: 1000, durationMs: 600000, playing: true);
       expect(host.phase, TogetherPhase.live);
+      expect(host.isShowingLive, isTrue);
       expect(host.startState, TogetherStartState.live);
       expect(host.showStartButton, isFalse);
 
-      // Pausing a live room does not resurrect Start.
+      // 2.10.0, Bug 1: pausing a live room hides the Live indicator —
+      // playback is no longer live — but the session survives: the phase
+      // stays live and Start never comes back (the room is already live).
       pause(host);
-      expect(host.startState, TogetherStartState.live);
+      expect(host.phase, TogetherPhase.live);
+      expect(host.isShowingLive, isFalse);
+      expect(host.startState, TogetherStartState.browsing);
+      expect(host.showStartButton, isFalse);
+
+      // Resuming brings the Live state back, with no second Start tap.
       play(host);
+      expect(host.isShowingLive, isTrue);
       expect(host.startState, TogetherStartState.live);
+
+      // Leaving the player hides it too: the hook's action is gone and
+      // the playing flag is cleared, so nothing claims to be live.
+      host.registerOrbStartAction(null);
+      expect(host.phase, TogetherPhase.live);
+      expect(host.isShowingLive, isFalse);
+      expect(host.startState, TogetherStartState.browsing);
     });
 
     test('guest never reaches ready', () {
@@ -236,8 +253,8 @@ void main() {
       expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
     });
 
-    testWidgets('tapping Start goes live and the button vanishes '
-        'into the tiny Live indicator', (tester) async {
+    testWidgets('tapping Start goes live and the button vanishes — '
+        'the orb hides entirely, no floating Live pill', (tester) async {
       final service = hostReadyToPlay();
       await pumpOrb(tester, service);
       play(service);
@@ -256,9 +273,13 @@ void main() {
       await tester.pump();
 
       expect(service.phase, TogetherPhase.live);
+      expect(service.isShowingLive, isTrue);
       expect(find.text('Start'), findsNothing);
       expect(find.text('Ready to start'), findsNothing);
-      expect(find.text('Live'), findsOneWidget);
+      // 2.10.0, Bug 1: no floating Live pill anywhere — the Live status
+      // lives only in the player control panel now, so the orb (mounted
+      // above the router) renders nothing at all while live.
+      expect(find.text('Live'), findsNothing);
       expect(find.text('Enjoy Together'), findsNothing);
     });
 
@@ -327,7 +348,10 @@ void main() {
       expect(goLiveCalls, 1);
       expect(find.text('Start'), findsNothing);
       expect(find.byType(TogetherStartButton), findsNothing);
-      expect(find.text('Live'), findsOneWidget);
+      // 2.10.0, Bug 1: going live hides the orb entirely — no floating
+      // Live pill; the Live status lives in the player control panel.
+      expect(find.text('Live'), findsNothing);
+      expect(find.text('Enjoy Together'), findsNothing);
     });
 
     testWidgets(

@@ -173,6 +173,37 @@ class PlayerPlatformService {
   /// ticks cannot enqueue duplicates. A failed request clears it for retry.
   Orientation? _pinnedOrientation;
 
+  /// Whether landscape was ever asked of the OS by this instance, even if
+  /// that request failed at the channel.
+  ///
+  /// [restoreOrientation] is owed whenever this is true: a failed landscape
+  /// request clears [_pinnedOrientation] for retry, but the OS may still
+  /// hold the last landscape pin it applied, and gating the restore on the
+  /// flag would silently leave the phone in landscape for the rest of the
+  /// process.
+  bool _landscapeRequested = false;
+
+  /// Whether orientation has been handed back.
+  ///
+  /// Terminal for this instance: once set, [applyLandscapeOrientation] is a
+  /// no-op. The player route stays mounted through the pop transition while
+  /// the controller keeps ticking, and a tick that lands after the restore
+  /// used to re-pin landscape and drop the queued portrait request as stale
+  /// (see [_queueOrientation]) — the whole app then stayed in landscape
+  /// with nobody left to restore it. Each player screen owns a fresh
+  /// service, so a later playback re-pins through its own instance.
+  bool _released = false;
+
+  /// Whether a restore request reached the OS. Once true, further restore
+  /// calls are no-ops: the screen calls restore twice (on Back, then from
+  /// dispose) and the second call must not queue a duplicate.
+  bool _restoreDelivered = false;
+
+  /// Whether the latest restore request failed at the channel. While true,
+  /// a further restore call re-queues instead of returning early, so a
+  /// restore issued during teardown gets its second chance from dispose.
+  bool _restoreFailed = false;
+
   /// Returns whether the window actually shrank. False covers pre-Oreo, a
   /// device that refuses, and a user who has turned PiP off for this app,
   /// which Android reports as a plain `false`.
@@ -290,6 +321,10 @@ class PlayerPlatformService {
   /// repeated playback events retry if the platform channel previously failed.
   /// [restoreOrientation] releases the request when the player closes.
   void applyLandscapeOrientation() {
+    // Restore is terminal for this instance: the player is leaving, and a
+    // tick that lands during the pop transition must not re-pin landscape
+    // over the portrait request already queued. See [_released].
+    if (_released) return;
     final platform = _targetPlatform();
     final isMobile =
         platform == TargetPlatform.android || platform == TargetPlatform.iOS;
@@ -305,10 +340,14 @@ class PlayerPlatformService {
     }
     if (_pinnedOrientation == Orientation.landscape) return;
     _pinnedOrientation = Orientation.landscape;
+    _landscapeRequested = true;
     _queueOrientation(_landscape);
   }
 
-  void _queueOrientation(List<DeviceOrientation> orientations) {
+  void _queueOrientation(
+    List<DeviceOrientation> orientations, {
+    bool isRestore = false,
+  }) {
     final request = ++_orientationRequest;
     _orientationQueue = _orientationQueue
         .catchError((Object error, StackTrace stackTrace) {
@@ -322,7 +361,18 @@ class PlayerPlatformService {
           if (request != _orientationRequest) return;
           try {
             await _setPreferredOrientations(orientations);
+            if (isRestore) {
+              _restoreDelivered = true;
+              _restoreFailed = false;
+            }
           } catch (error) {
+            // A failed restore stays retryable: the screen calls restore
+            // twice (on Back, then from dispose), and the second call must
+            // re-queue rather than return early.
+            if (isRestore && request == _orientationRequest) {
+              _restoreFailed = true;
+              _restoreDelivered = false;
+            }
             // Leave the service eligible to retry if the platform channel was
             // temporarily unavailable; never leak an unhandled async error.
             if (request == _orientationRequest) _pinnedOrientation = null;
@@ -343,20 +393,34 @@ class PlayerPlatformService {
   /// would unlock rotation app-wide and leave every other screen free to land
   /// sideways.
   ///
-  /// Gated on [_pinnedOrientation] rather than on the form factor: a player
-  /// closed before the first frame decoded pinned nothing on the way in, and
-  /// pinning `portraitUp` on the way out would freeze rotation for the rest of
-  /// the process, since nothing else in the app ever calls
+  /// Terminal: the first call marks this instance released, so a playback
+  /// tick that lands during the pop transition cannot re-pin landscape over
+  /// the portrait request. Idempotent once the restore reached the OS, and
+  /// re-issued when the previous restore failed at the channel — the screen
+  /// calls this on Back and again from dispose, and the second call is the
+  /// first one's retry, not a duplicate.
+  ///
+  /// Owed whenever landscape was ever requested ([_landscapeRequested]),
+  /// not only while [_pinnedOrientation] is set: a failed landscape request
+  /// clears the pin for retry, and gating on it would skip the restore the
+  /// phone still needs. A player closed before anything was pinned sends
+  /// nothing, since pinning `portraitUp` on the way out would freeze rotation
+  /// for the rest of the process, and nothing else in the app ever calls
   /// `setPreferredOrientations`. The form factor can also have changed
   /// underneath us since the pin.
   ///
   void restoreOrientation(PlayerFormFactor form) {
-    if (_pinnedOrientation == null) return;
+    if (_restoreDelivered) return;
+    if (_released && !_restoreFailed) return;
+    _released = true;
+    _restoreFailed = false;
+    if (!_landscapeRequested && _pinnedOrientation == null) return;
     _pinnedOrientation = null;
     _queueOrientation(
       form == PlayerFormFactor.phone
           ? const [DeviceOrientation.portraitUp]
           : const [],
+      isRestore: true,
     );
   }
 
@@ -437,4 +501,58 @@ class PlayerPlatformService {
     if (Platform.isAndroid || Platform.isIOS) return;
     windowManager.removeListener(listener);
   }
+}
+
+/// The player screen's orientation contract, in one place.
+///
+/// The screen used to drive [PlayerPlatformService] from three scattered
+/// call sites — a playback tick, a build post-frame callback, and dispose —
+/// with no owner for the order they run in. That scattering is what let a
+/// tick during the pop transition undo the restore: nothing said "leaving"
+/// out loud. This controller is that owner, and the only thing the screen
+/// calls for orientation:
+///
+/// * landscape while the player is up ([onPlaybackTick],
+///   [onForegrounded]);
+/// * portrait (phones) the moment it leaves, whichever way it leaves
+///   ([onBack] before the pop, [dispose] as the second chance).
+///
+/// It holds no state of its own: the form factor stays the screen's cached
+/// `_form`, passed in per call, and the pin/release state lives in the
+/// service, where the channel queue can enforce it. It takes no Together
+/// input, so popping the player while a room is live follows exactly the
+/// same path as popping it alone. TV behaviour is unchanged: the service
+/// pins landscape on any Android/iOS device and releases it on exit, and
+/// this controller never overrides that.
+class PlayerOrientationController {
+  PlayerOrientationController(this._platform);
+
+  final PlayerPlatformService _platform;
+
+  /// A playback tick: (re-)assert landscape while the player is up.
+  ///
+  /// Idempotent while pinned, and a no-op once the player is leaving — a
+  /// tick during the pop transition must not re-pin over the restore.
+  void onPlaybackTick() => _platform.applyLandscapeOrientation();
+
+  /// The app came back to the foreground with the player still open —
+  /// Home-button backgrounding, or a tap back from the PiP window.
+  ///
+  /// Re-asserts landscape in case the pin was lost while backgrounded. A
+  /// no-op when already pinned, and blocked once the player is leaving, so
+  /// a foreground event mid-pop cannot resurrect the pin.
+  void onForegrounded() => _platform.applyLandscapeOrientation();
+
+  /// Back, from any path: the chrome button, the system back/gesture, the
+  /// close buttons on the ended and failed cards.
+  ///
+  /// Restores before the pop, while the route and its platform channel are
+  /// definitely alive — dispose alone left the restore to teardown timing,
+  /// with nothing to retry it. The dispose call below is the retry.
+  void onBack(PlayerFormFactor form) => _platform.restoreOrientation(form);
+
+  /// Teardown: the second chance for the restore issued by [onBack], and
+  /// the only restore when the route leaves without Back (a route
+  /// replacement, or the system removing the route).
+  void dispose(PlayerFormFactor form) => _platform.restoreOrientation(form);
 }

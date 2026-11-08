@@ -64,10 +64,24 @@ enum TogetherRole { host, guest }
 /// * [ready] — the host has picked a title, a player is open, and the
 ///   movie is actually playing. Only now does the compact Start run
 ///   button appear.
-/// * [live] — the host pressed Start (or the guest joined a live room):
-///   the Start button is gone for good, replaced by the tiny Live
-///   indicator. It never comes back while live.
+/// * [live] — the room is live AND the shared title is actually playing
+///   in an open player right now (see [TogetherService.isShowingLive]):
+///   the Start button is gone for good, the floating orb hides entirely,
+///   and the Live status lives only in the player control panel. A live
+///   room whose playback is paused, whose player is closed, or whose host
+///   has left is `browsing` here, not `live` — the phase stays live (the
+///   session survives a pause), but nothing on screen claims it is live.
 enum TogetherStartState { hidden, browsing, ready, live }
+
+/// Health of a live Together session, for the Live indicator in the
+/// player control panel (see [TogetherService.liveHealth]).
+///
+/// Green ([healthy]) while the relay round-trip, the guest's drift from
+/// the host's clock and the heartbeat are all inside their budgets;
+/// orange ([degraded]) the moment any one of them is not. The indicator
+/// renders nothing at all when the session is not showing live — health
+/// is only ever read alongside [TogetherService.isShowingLive].
+enum TogetherLiveHealth { healthy, degraded }
 
 /// What sending a chat photo can end in. The chat panel turns each one
 /// into an honest line — never a silent drop, never a generic failure.
@@ -116,6 +130,26 @@ const Duration kTogetherHostSilenceTimeout = Duration(seconds: 8);
 /// 1 s, so 30 s of total silence genuinely means the relay or the host is
 /// gone — not that the host is browsing slowly.
 const Duration kTogetherWaitingStaleTimeout = Duration(seconds: 30);
+
+/// Live-indicator health budgets (2.10.0, Bug 1). The player control
+/// panel shows a blinking green Live dot while every signal is inside
+/// budget, and turns it orange the moment any one of them is not:
+///
+/// * [kTogetherLiveDegradedRttMs] — measured MQTT round-trip over
+///   800 ms: the relay is slow enough that a host action takes most of
+///   a second to reach the other phone.
+/// * [kTogetherLiveDegradedDriftMs] — a guest further than 750 ms from
+///   where the host's clock says it should be: the same threshold at
+///   which sync stops nudging the rate and seeks instead
+///   ([kSyncSeekThresholdMs]), so "orange" and "about to jump" agree.
+/// * [kTogetherLiveHeartbeatStaleMs] — a guest that has heard no host
+///   heartbeat for 3 s (three missed 1 s beats): the host may still be
+///   there, but nothing has proved it recently. Only applies once a host
+///   heartbeat has been seen at all — a room with no heartbeat yet is
+///   not degraded for having none.
+const int kTogetherLiveDegradedRttMs = 800;
+const int kTogetherLiveDegradedDriftMs = kSyncSeekThresholdMs;
+const int kTogetherLiveHeartbeatStaleMs = 3000;
 
 /// Reconnect backoff and the attempt cap live in `connection.dart`
 /// ([kTogetherReconnectDelaysSeconds], [kTogetherMaxReconnectAttempts])
@@ -423,7 +457,95 @@ class TogetherService extends ChangeNotifier {
       _phase != TogetherPhase.idle && _phase != TogetherPhase.error;
 
   /// True once the host has pressed Start (or a guest joined a live room).
+  ///
+  /// This is the *session* fact, and it is deliberately sticky: pausing,
+  /// closing the player or losing the host does not end the session — the
+  /// room survives all three, and the guest keeps its last synced state.
+  /// Nothing on screen may read this as "show a Live pill": that is
+  /// [isShowingLive], which is the only live fact the UI renders.
   bool get isLive => _phase == TogetherPhase.live;
+
+  /// True only while a Live indicator may be shown anywhere — the one
+  /// condition the player control panel and the floating orb both read.
+  ///
+  /// 2.10.0, Bug 1 (the stale "Live" pill on home): `isLive` used to be
+  /// the indicator condition, and it is sticky — the phase flips to
+  /// `live` on Start and nothing flips it back except [leaveRoom], so a
+  /// pill mounted above the router (see `main.dart`) kept saying "Live"
+  /// on the home screen, the details screen and in the player long after
+  /// the user had left the player, paused, or lost the host. The phase
+  /// is the session; this getter is the *playback* fact, and it requires
+  /// all of these at once:
+  ///
+  /// * the phase is live (a session exists and went live);
+  /// * the host has not left ([hostGone] — a `bye`, a presence `left`,
+  ///   or 8 s of host silence);
+  /// * a player is open ([isPlayerOpen] — the hook registers its action
+  ///   on attach and clears it on dispose, so leaving the player clears
+  ///   this the moment the route pops);
+  /// * the shared title is actually playing ([isLocallyPlaying] — the
+  ///   hook clears it with the player, and a pause clears it at once);
+  /// * the room knows what title it is about ([currentMedia]).
+  ///
+  /// The moment any one of those stops holding, the indicator vanishes
+  /// — no stale pill on home, details, search or anywhere else — while
+  /// the session itself survives: resume playback (or re-open the
+  /// player on the same title) and the indicator comes back, with no
+  /// second Start tap.
+  bool get isShowingLive =>
+      _phase == TogetherPhase.live &&
+      !_hostGone &&
+      _orbStartAction != null &&
+      _lastLocalPlaying &&
+      currentMedia != null;
+
+  /// How far this phone's engine is from where the host's clock says it
+  /// should be, in milliseconds — the guest's sync error, straight off
+  /// the latest host state. The host is the clock, so its drift is 0 by
+  /// definition; a guest with no host state yet has no drift to measure
+  /// (null, not a guess). Read by [liveHealth]: over
+  /// [kTogetherLiveDegradedDriftMs] the Live dot turns orange.
+  int? get liveDriftMs {
+    if (_phase != TogetherPhase.live) return null;
+    if (_role == TogetherRole.host) return 0;
+    final state = _roomState;
+    if (state == null) return null;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    return (state.targetPositionMs(nowMs: nowMs) - _lastLocalPositionMs)
+        .abs();
+  }
+
+  /// Health of the live session for the player control panel's Live dot:
+  /// green ([TogetherLiveHealth.healthy]) while the relay round-trip,
+  /// the guest's drift and the host heartbeat are all inside budget,
+  /// orange ([TogetherLiveHealth.degraded]) the moment any one is not —
+  /// reconnecting to the relay, a measured round-trip over
+  /// [kTogetherLiveDegradedRttMs], drift over
+  /// [kTogetherLiveDegradedDriftMs], or (guest only, once a host
+  /// heartbeat has been seen) no host heartbeat for
+  /// [kTogetherLiveHeartbeatStaleMs]. No signal yet is not a failure:
+  /// a null round-trip or an unseen heartbeat reads healthy until a
+  /// measurement says otherwise.
+  TogetherLiveHealth get liveHealth {
+    if (_reconnecting) return TogetherLiveHealth.degraded;
+    final rtt = _roundTripMs;
+    if (rtt != null && rtt > kTogetherLiveDegradedRttMs) {
+      return TogetherLiveHealth.degraded;
+    }
+    final drift = liveDriftMs;
+    if (drift != null && drift > kTogetherLiveDegradedDriftMs) {
+      return TogetherLiveHealth.degraded;
+    }
+    if (_role == TogetherRole.guest && _hostClientId != null) {
+      final heartbeat = _peerHeartbeats[_hostClientId];
+      if (heartbeat != null &&
+          DateTime.now().millisecondsSinceEpoch - heartbeat.receivedAtMs >
+              kTogetherLiveHeartbeatStaleMs) {
+        return TogetherLiveHealth.degraded;
+      }
+    }
+    return TogetherLiveHealth.healthy;
+  }
 
   /// The engine's actual transport state at the last reported tick: true
   /// only while the movie is really playing in an open player. Cleared
@@ -439,11 +561,16 @@ class TogetherService extends ChangeNotifier {
   /// The Start-button state machine ([TogetherStartState]): the one place
   /// the decision is made. Browsing shows only the neutral orb pill;
   /// `ready` needs all four at once — host, pending room, a picked title,
-  /// an open player, and the movie actually playing; `live` means the
-  /// button is gone, replaced by the Live indicator.
+  /// an open player, and the movie actually playing; `live` needs the
+  /// room live AND the shared title playing in an open player right now
+  /// ([isShowingLive]) — never the phase alone, which outlives the
+  /// player, the pause and the host (see [isShowingLive]). A live room
+  /// that is paused, player-less or host-less falls back to `browsing`:
+  /// the neutral pill returns, Start stays gone, and the session itself
+  /// is untouched — resume and it is live again.
   TogetherStartState get startState {
     if (!isSessionActive) return TogetherStartState.hidden;
-    if (isLive) return TogetherStartState.live;
+    if (isShowingLive) return TogetherStartState.live;
     if (_role == TogetherRole.host &&
         _phase == TogetherPhase.pendingHost &&
         _pendingMedia != null &&
@@ -518,6 +645,26 @@ class TogetherService extends ChangeNotifier {
   /// ([_handlePayload]), as if it had arrived from the broker. Test-only.
   @visibleForTesting
   void debugReceivePayloadForTest(String json) => _handlePayload(json);
+
+  /// Sets the last measured round-trip directly, as if a heartbeat echo
+  /// had just measured it. Test-only — production sets it from the echo
+  /// in [_handlePayload]. Lets tests pin the Live health rule
+  /// ([liveHealth]) at and above [kTogetherLiveDegradedRttMs] without a
+  /// broker.
+  @visibleForTesting
+  void debugSetRoundTripMsForTest(int? rttMs) {
+    _roundTripMs = rttMs;
+    notifyListeners();
+  }
+
+  /// Sets the reconnecting flag directly. Test-only — production sets it
+  /// in [_startReconnect]/[_cancelReconnect]. Lets tests pin the Live
+  /// health rule ([liveHealth]) while the relay is being retried.
+  @visibleForTesting
+  void debugSetReconnectingForTest(bool reconnecting) {
+    _reconnecting = reconnecting;
+    notifyListeners();
+  }
 
   // ---- Lifecycle ----
 
@@ -908,12 +1055,16 @@ class TogetherService extends ChangeNotifier {
     _lastLocalDurationMs = durationMs;
     final playingFlipped = playing != _lastLocalPlaying;
     _lastLocalPlaying = playing;
-    // A play/pause flip while the host is still pending IS the Start
-    // button appearing / vanishing: the orb must rebuild for it, even
-    // though nothing is published to the relay yet.
-    if (playingFlipped &&
-        _role == TogetherRole.host &&
-        _phase == TogetherPhase.pendingHost) {
+    // A play/pause flip is a UI-visible state change in every phase, so
+    // the listeners rebuild for it — never silently:
+    // * pending host: the Start button appearing / vanishing;
+    // * live host or guest: the Live indicator appearing / vanishing
+    //   ([isShowingLive] requires playback actually playing, 2.10.0
+    //   Bug 1 — without this notify the orb and the player control panel
+    //   would keep showing Live after a pause, because the publish path
+    //   below does not notify). A flip is a rare user action, never a
+    //   per-tick event, so this costs no rebuild storm.
+    if (playingFlipped) {
       notifyListeners();
     }
     if (_role != TogetherRole.host || _phase != TogetherPhase.live) return;

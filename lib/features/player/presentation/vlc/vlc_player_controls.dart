@@ -23,6 +23,8 @@ import '../widgets/player_stream_widgets.dart'
 
 import 'package:screen_brightness/screen_brightness.dart';
 
+import '../../../together/presentation/together_live_indicator.dart';
+import '../../../together/together_service.dart' show TogetherLiveHealth;
 import 'chrome_visibility_controller.dart';
 import 'player_rail.dart';
 import 'player_slider_dialog.dart';
@@ -92,11 +94,15 @@ class VlcPlayerControls extends ConsumerStatefulWidget {
     this.locked,
     this.systemVolumeFactory,
     // Together watch party (phone only, never TV): the hook in
-    // together_player_hook.dart owns the sync; these three are only the
+    // together_player_hook.dart owns the sync; these are only the
     // chrome it needs. Null chat callback means no room — no button.
+    // Null live health means not showing live — no indicator at all,
+    // never a stale one: the screen passes the health only while
+    // TogetherService.isShowingLive holds.
     this.togetherGuestLocked = false,
     this.onTogetherChat,
     this.togetherChatHasUnread = false,
+    this.togetherLiveHealth,
     super.key,
   });
 
@@ -199,6 +205,14 @@ class VlcPlayerControls extends ConsumerStatefulWidget {
   /// Whether a chat message arrived while the panel was closed: a lit
   /// dot on the chat button until the panel is opened.
   final bool togetherChatHasUnread;
+
+  /// Health of the live Together session, for the Live indicator that
+  /// sits next to the chat button. Null when the session is not showing
+  /// live (no room, paused, player closing, host gone) — and then no
+  /// indicator renders at all. The screen derives this from
+  /// [TogetherService.isShowingLive] / [TogetherService.liveHealth], so
+  /// this widget never decides liveness itself.
+  final TogetherLiveHealth? togetherLiveHealth;
 
   /// How the system media volume is reached, for the form factors that route
   /// through it. Null takes the real platform one; a test passes a fake,
@@ -1564,6 +1578,12 @@ class _VlcPlayerControlsState extends ConsumerState<VlcPlayerControls> {
     required bool isTv,
   }) {
     return <Widget>[
+      // Together Live, first in the row, immediately left of the chat
+      // button — the only place a Live status renders (2.10.0, Bug 1).
+      // Null health means not showing live: nothing renders here at all,
+      // never a stale pill. Green while healthy, orange while degraded.
+      if (widget.togetherLiveHealth != null)
+        TogetherLiveIndicator(health: widget.togetherLiveHealth!),
       // Together chat, first in the row and only while a room is active.
       // The dot is the unread badge: it lights when a message arrives
       // while the panel is closed and goes out when the panel opens.

@@ -549,6 +549,12 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
 
   final PlayerPlatformService _platform = PlayerPlatformService();
 
+  /// The single owner of this screen's orientation contract: landscape
+  /// while the player is up, portrait (phones) the moment it leaves.
+  /// Shares [_platform] so PiP, fullscreen and orientation stay on one
+  /// service instance. See [PlayerOrientationController].
+  late final PlayerOrientationController _orientation;
+
   /// The device profile used when restoring orientation after playback. The
   /// landscape request itself is independent of this profile and media data.
   PlayerFormFactor _form = PlayerFormFactor.unknown;
@@ -672,6 +678,7 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     // the seed read is issued so nothing that happens during its await is
     // missed - see [_windowSpoke] for which of the two wins.
     _platform.addWindowListener(this);
+    _orientation = PlayerOrientationController(_platform);
     unawaited(_seedFullscreen());
     // Held for startup, then handed to playback - see [_syncPlayingState].
     // Resolving a cold magnet link can take minutes with nothing playing, and
@@ -3124,7 +3131,7 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
   /// rotation metadata the source provides. This also lets later playback
   /// events retry if the platform rejected a request during startup.
   void _syncOrientation() {
-    _platform.applyLandscapeOrientation();
+    _orientation.onPlaybackTick();
   }
 
   /// Raises the up-next card in the closing seconds of an episode.
@@ -3209,6 +3216,11 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       // what ending PiP looks like, and the chrome must come back with it
       // whether or not the activity got round to telling us.
       if (_inPip) setState(() => _inPip = false);
+      // The player is still the top route: re-assert landscape in case the
+      // pin was lost while backgrounded. A no-op when already pinned, and
+      // blocked once the player is leaving, so a foreground event mid-pop
+      // cannot resurrect the pin.
+      _orientation.onForegrounded();
     }
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
@@ -3245,6 +3257,13 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     if (_locked.value && _lockedBack()) return;
     if (_dismissOverlay()) return;
     if (!fromChrome && _hideChromeForBack()) return;
+    // Restore before the pop, while the route and its platform channel are
+    // definitely alive: a restore left to dispose alone depended on
+    // teardown timing, and a playback tick landing during the pop transition
+    // could re-pin landscape over it. The service makes the restore
+    // terminal, so ticks during the transition cannot undo it, and dispose
+    // re-issues it if this one failed at the channel.
+    _orientation.onBack(_form);
     final navigator = Navigator.of(context);
     // The player is normally pushed over something. If it is not - a deep link
     // straight into playback - Back leaves the app, which is what it would
@@ -3498,6 +3517,11 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     _locked.dispose();
     _togetherHook?.dispose();
     _togetherHook = null;
+    // The hook's dispose is also the player-exit reset for the Live
+    // indicator (2.10.0, Bug 1): it clears the orb Start action, which
+    // clears the playing flag, so `isShowingLive` goes false the moment
+    // this screen goes away — no stale Live pill can survive the pop,
+    // on any exit path, because every exit runs through this dispose.
     ref.read(togetherServiceProvider).registerOrbOpenChatAction(null);
     // After _disposed is set, so no late publisher writes to a dead notifier;
     // an open panel's builder may still unsubscribe, which a disposed
@@ -3522,8 +3546,10 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
     WakelockPlus.disable();
     // Hands orientation back the way this device wants it, rather than
     // unlocking rotation app-wide, which would leave every other screen free
-    // to land sideways for the rest of the process.
-    _platform.restoreOrientation(_form);
+    // to land sideways for the rest of the process. Second chance for the
+    // restore issued on Back; the only restore when the route leaves
+    // without Back.
+    _orientation.dispose(_form);
     SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.manual,
       overlays: SystemUiOverlay.values,
@@ -3574,7 +3600,7 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       // waiting for a stream's first dimensions or the next VLC event tick.
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || _disposed || _form != nextForm) return;
-        _platform.applyLandscapeOrientation();
+        _orientation.onPlaybackTick();
       });
     }
     final isTv = _form == PlayerFormFactor.tv;
@@ -3596,6 +3622,20 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       ),
     );
     final togetherChatHasUnread = togetherChrome.$1;
+
+    // Together Live for the control panel, watched narrowly like the
+    // chrome above: the health (green / orange) only, and only while
+    // the session is actually showing live — a null here unmounts the
+    // indicator in the controls outright. The screen never decides
+    // liveness itself: [TogetherService.isShowingLive] requires the
+    // phase live, the host present, a player open and the shared title
+    // actually playing, so pausing, leaving the player or losing the
+    // host hides the chip in the same rebuild (2.10.0, Bug 1).
+    final togetherLiveHealth = ref.watch(
+      togetherServiceProvider.select(
+        (s) => s.isShowingLive ? s.liveHealth : null,
+      ),
+    );
 
     return PopScope(
       // One guarded path for Back: dismiss what the screen has open, and only
@@ -3730,6 +3770,10 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
                         }
                       : null,
                   togetherChatHasUnread: togetherChatHasUnread,
+                  // Live, next to the chat button: green while healthy,
+                  // orange while degraded, absent whenever the session is
+                  // not showing live (see the select above).
+                  togetherLiveHealth: togetherLiveHealth,
                 ),
               ),
               // Both overlays position themselves against the chrome and sit

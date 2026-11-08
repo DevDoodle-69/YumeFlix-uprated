@@ -47,10 +47,16 @@ import 'together_start_button.dart';
 ///   actually playing: the pill becomes the compact Start run button
 ///   (dark pill, slate-blue play icon, white "Start", no red, no
 ///   underline, no glow). Tapping it goes live at once.
-/// * live — the Start button is gone, replaced by the tiny Live indicator
-///   (slate-blue dot + "Live"). It never reappears while live.
-/// * leaving the player without going live, or pausing, drops the state
-///   back to browsing; Start returns only when playback resumes.
+/// * live — the orb hides ENTIRELY (2.10.0, Bug 1). The Start button is
+///   gone and the Live status lives only in the player control panel's
+///   Live indicator, next to the chat icon, where it can only
+///   exist while the shared title is actually playing in an open player.
+///   The old floating "Live" pill read the sticky session phase and
+///   stayed up on the home screen, details and search long after the
+///   user had left the player, paused or lost the host; it is deleted,
+///   and [TogetherService.isShowingLive] is the only live fact any UI
+///   reads. A live room that is paused or player-less falls back to
+///   browsing here, and the neutral pill returns.
 ///
 /// Start and chat come from the player while one is open: the player hook
 /// registers its `goLive` and the player screen its open-chat action on
@@ -216,6 +222,16 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
     final isTv =
         ref.watch(deviceProfileProvider).asData?.value.isTv ?? false;
     if (!service.isSessionActive || isTv) return const SizedBox.shrink();
+    // 2.10.0, Bug 1: while the room is live AND the shared title is
+    // actually playing in an open player, the orb hides entirely — the
+    // Live status lives only in the player control panel, which unmounts
+    // the moment playback stops or the player closes. Showing any pill
+    // here in that state is how the stale "Live" pill ended up on the
+    // home screen: this widget sits above the router and outlives the
+    // player, so it must never render a live claim of its own.
+    if (service.startState == TogetherStartState.live) {
+      return const SizedBox.shrink();
+    }
 
     final media = MediaQuery.of(context);
     final size = media.size;
@@ -226,7 +242,6 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
     // actually rendered, so a narrow pill can still reach the screen edge.
     final collapsedWidth = switch (service.startState) {
       TogetherStartState.ready => 104.0,
-      TogetherStartState.live => 92.0,
       _ => _kCollapsedWidth,
     };
     final width = _expanded ? _kExpandedWidth : collapsedWidth;
@@ -359,20 +374,25 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
   }
 
   Widget _collapsedPill(BuildContext context, TogetherService service) {
-    // Ready and live get their own compact pills below; browsing /
-    // reconnecting / waiting share the neutral pill. There is deliberately
-    // no "Ready to start" state anywhere: while browsing the orb is only
-    // ever the neutral pill, and Start appears only as the run button,
-    // only while the movie is playing.
+    // Ready gets its own compact pill below; browsing / reconnecting /
+    // waiting share the neutral pill. There is deliberately no "Ready to
+    // start" state anywhere: while browsing the orb is only ever the
+    // neutral pill, and Start appears only as the run button, only while
+    // the movie is playing. And there is deliberately no live pill any
+    // more (2.10.0, Bug 1): `build` hides the orb entirely while live,
+    // so this switch never sees `live` — the defensive arm below keeps
+    // it that way if the gate ever changes, instead of resurrecting a
+    // pill that can outlive the player.
     switch (service.startState) {
       case TogetherStartState.ready:
         // THE Start button — the single one in the app. Tapping it goes
         // live at once; goLive flips the phase to live synchronously, so
         // the button vanishes in the same rebuild and the Live indicator
-        // takes its place. No second Start lives anywhere else. The action
-        // is resolved at tap time, not build time: the player hook
-        // registers its goLive on the service while a player is open, and
-        // the button must use the action current at the tap.
+        // in the player control panel takes its place. No second Start
+        // lives anywhere else. The action is resolved at tap time, not
+        // build time: the player hook registers its goLive on the service
+        // while a player is open, and the button must use the action
+        // current at the tap.
         return TogetherStartButton(
           onPressed: () {
             final onStart = widget.onStart ?? service.orbStartAction;
@@ -380,7 +400,7 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
           },
         );
       case TogetherStartState.live:
-        return _livePill();
+        return const SizedBox.shrink();
       case TogetherStartState.hidden:
       case TogetherStartState.browsing:
         break;
@@ -438,43 +458,6 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  /// The tiny live indicator that replaces the Start button the moment
-  /// the room goes live: a slate-blue dot + "Live", same dark pill, same
-  /// neutral palette. Tapping it expands the card (chat, code, Leave).
-  Widget _livePill() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-      decoration: BoxDecoration(
-        color: YumeDesign.surfaceRaised,
-        borderRadius: YumeDesign.pillRadius,
-        border: Border.all(color: YumeDesign.hairlineStrong),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 8,
-            height: 8,
-            decoration: const BoxDecoration(
-              color: YumeDesign.accent,
-              shape: BoxShape.circle,
-            ),
-          ),
-          const SizedBox(width: 6),
-          const Text(
-            'Live',
-            style: TextStyle(
-              color: YumeDesign.textPrimary,
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              decoration: TextDecoration.none,
-            ),
-          ),
-        ],
       ),
     );
   }
