@@ -660,7 +660,7 @@ class _NextEpisodeCountdownState extends State<NextEpisodeCountdown>
     );
   }
 
-  /// `42m · ★ 8.1` — everything the pill does not carry, each part optional.
+  /// `42m · 8.1` — everything the pill does not carry, each part optional.
   String? get _meta {
     final parts = <String>[];
 
@@ -673,7 +673,7 @@ class _NextEpisodeCountdownState extends State<NextEpisodeCountdown>
 
     final rating = widget.rating;
     if (rating != null && rating > 0) {
-      parts.add('★ ${rating.toStringAsFixed(1)}');
+      parts.add(rating.toStringAsFixed(1));
     }
 
     return parts.isEmpty ? null : parts.join('  ·  ');

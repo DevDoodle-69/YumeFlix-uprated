@@ -183,12 +183,32 @@ const String kTogetherRelayUnreachableMessage =
 /// Never logs message contents, room codes or payloads: connection events
 /// only, and only in debug builds.
 class TogetherService extends ChangeNotifier {
-  TogetherService({Random? random, SharedPreferences? preferences})
-    : _random = random ?? Random.secure(),
-      _preferencesOverride = preferences;
+  TogetherService({
+    Random? random,
+    SharedPreferences? preferences,
+    DateTime Function()? clock,
+  }) : _random = random ?? Random.secure(),
+       _preferencesOverride = preferences,
+       _clock = clock ?? DateTime.now;
 
   final Random _random;
   final SharedPreferences? _preferencesOverride;
+
+  /// The clock the room-lifetime decisions read (2.12.0): expiry,
+  /// remaining time and the created-at stamp. Injectable so tests can
+  /// move time 45 minutes without waiting for it — production passes
+  /// nothing and gets [DateTime.now]. Only the lifetime path reads it;
+  /// everything else keeps its own timestamps.
+  DateTime Function() _clock;
+
+  /// Wall-clock milliseconds right now, on [_clock].
+  int _nowMs() => _clock().millisecondsSinceEpoch;
+
+  /// Test-only: replaces the lifetime clock (see [_clock]).
+  @visibleForTesting
+  void debugSetClockForTest(DateTime Function() clock) {
+    _clock = clock;
+  }
 
   /// Stable per-install sender id. Random, not the user: there is no account.
   late final String clientId =
@@ -205,6 +225,30 @@ class TogetherService extends ChangeNotifier {
   TogetherPhase _phase = TogetherPhase.idle;
   TogetherRole? _role;
   String? _otp;
+
+  /// Wall-clock milliseconds when this room was created (host-stamped,
+  /// learned from the host's state/status/heartbeat by a guest). Null
+  /// until known — a room predating 2.12.0, or one whose host traffic
+  /// has not arrived yet, has no lifetime to enforce.
+  int? _roomCreatedAtMs;
+
+  /// Remaining seconds last notified to listeners, so the 1 s heartbeat
+  /// tick rebuilds the countdown once a second — never more.
+  int? _lastNotifiedRemainingSeconds;
+
+  /// True while an expiry is being carried out (re-entry guard).
+  bool _expiring = false;
+
+  /// True while an empty-room auto-close is being carried out.
+  bool _closingEmpty = false;
+
+  /// True when the session just ended in a way that must NOT stop local
+  /// playback: room expiry and empty-room auto-close both end the room
+  /// but leave the movie playing on this phone. The auto-open
+  /// coordinator reads this before popping a player on session end.
+  /// Set at room entry to false; a plain leave or a room-full rejection
+  /// leaves it false, so those still pop an auto-opened player.
+  bool _sessionEndedKeepingPlayback = false;
   TogetherRoomState? _roomState;
   TogetherMediaIdentity? _pendingMedia;
   String? _error;
@@ -233,7 +277,8 @@ class TogetherService extends ChangeNotifier {
       <String, TogetherMember>{};
 
   /// This phone's guest display name — the name typed in the join dialog
-  /// (2.11.0). Null for the host, who is `HOST 👑` and types no name.
+  /// (2.11.0). Null for the host, who is `HOST` (crown icon) and types
+  /// no name.
   /// Survives a room reset: it is the identity for the next join too, and
   /// [retry] re-joins with it.
   String? _ownDisplayName;
@@ -560,7 +605,7 @@ class TogetherService extends ChangeNotifier {
 
   /// Who is in the room, host first, then guests in join order — for the
   /// member list on the Together screen and the orb card. Each member
-  /// carries its typed guest name, or `HOST 👑` for the host.
+  /// carries its typed guest name, or `HOST` (crown icon) for the host.
   List<TogetherMember> get members {
     final list = _presentMembers.values.toList();
     final host = list.where((m) => m.isHost).toList();
@@ -590,19 +635,60 @@ class TogetherService extends ChangeNotifier {
   /// no player is open.
   TogetherMediaIdentity? get playerOpenMedia => _playerOpenMedia;
 
-  /// One-line presence summary, e.g. `HOST 👑 + 2 guests in room`.
-  /// The host is always `HOST 👑` here too — crown + label, never colour
-  /// alone — and the guest count is exact (see [guestCount]).
+  /// One-line presence summary, e.g. `HOST + 2 guests in room`.
+  /// The host is always `HOST` here too — crown icon + label, never
+  /// colour alone — and the guest count is exact (see [guestCount]).
+  /// Plain text only: the crown is rendered as an icon widget by the
+  /// widgets that display a host, never as a character in this string.
   String get presenceLabel {
     final guests = guestCount;
     if (hostPresent && guests > 0) {
-      if (guests == 1) return 'HOST 👑 + Guest in room';
-      return 'HOST 👑 + $guests guests in room';
+      if (guests == 1) return 'HOST + Guest in room';
+      return 'HOST + $guests guests in room';
     }
-    if (hostPresent) return 'HOST 👑 in room';
+    if (hostPresent) return 'HOST in room';
     if (guests == 1) return 'Guest in room';
     if (guests > 1) return '$guests guests in room';
     return 'Waiting for the other phone…';
+  }
+
+  // ---- Room lifetime (2.12.0) ----
+
+  /// Wall-clock milliseconds when this room ends, or null while the
+  /// room's creation time is unknown (no room, or a host that predates
+  /// the lifetime). The orb / Together screen read this for the small
+  /// "Room ends in NN:NN" indicator.
+  int? get roomEndsAtMs => _roomCreatedAtMs == null
+      ? null
+      : _roomCreatedAtMs! + kTogetherRoomLifetime.inMilliseconds;
+
+  /// Time left in this room, counting down from 45 minutes. Zero when
+  /// there is no room, when the creation time is unknown, or when the
+  /// room has expired. Driven by the 1 s heartbeat tick (see
+  /// [_notifyRemainingTimeChanged]), so the indicator ticks instead of
+  /// freezing.
+  Duration get remainingTime {
+    final endsAt = roomEndsAtMs;
+    if (endsAt == null) return Duration.zero;
+    final leftMs = endsAt - _nowMs();
+    return leftMs <= 0 ? Duration.zero : Duration(milliseconds: leftMs);
+  }
+
+  /// True when the session just ended in a way that must NOT stop local
+  /// playback (room expiry, empty-room auto-close). The guest
+  /// auto-open coordinator reads this before popping a player when the
+  /// session ends; a plain leave or room-full leaves it false.
+  bool get keepLocalPlaybackAfterSessionEnd => _sessionEndedKeepingPlayback;
+
+  /// True when the room's 45 minutes are up, on [_clock], for the
+  /// given creation time (or this room's, when omitted). Unknown
+  /// creation time never counts as expired — a room predating the
+  /// lifetime, or one whose host traffic has not arrived yet, is not
+  /// ended on a guess.
+  bool roomExpired({int? createdAtMs}) {
+    final createdAt = createdAtMs ?? _roomCreatedAtMs;
+    if (createdAt == null || createdAt <= 0) return false;
+    return _nowMs() - createdAt >= kTogetherRoomLifetime.inMilliseconds;
   }
 
   /// Floating-orb position as a screen fraction, or null until loaded.
@@ -667,8 +753,7 @@ class TogetherService extends ChangeNotifier {
     final state = _roomState;
     if (state == null) return null;
     final nowMs = DateTime.now().millisecondsSinceEpoch;
-    return (state.targetPositionMs(nowMs: nowMs) - _lastLocalPositionMs)
-        .abs();
+    return (state.targetPositionMs(nowMs: nowMs) - _lastLocalPositionMs).abs();
   }
 
   /// Where the host is RIGHT NOW, in milliseconds — the live position a
@@ -906,10 +991,15 @@ class TogetherService extends ChangeNotifier {
   void debugEnterRoomForTest({
     required TogetherRole role,
     required String otp,
+    int? createdAtMs,
   }) {
     _resetRoomState();
     _role = role;
     _otp = otp;
+    _roomCreatedAtMs = createdAtMs;
+    _expiring = false;
+    _closingEmpty = false;
+    _sessionEndedKeepingPlayback = false;
     _phase = role == TogetherRole.host
         ? TogetherPhase.pendingHost
         : TogetherPhase.waitingGuest;
@@ -997,6 +1087,7 @@ class TogetherService extends ChangeNotifier {
       media: currentMedia,
       positionMs: _lastLocalPositionMs,
       savedAtMs: DateTime.now().millisecondsSinceEpoch,
+      createdAtMs: _roomCreatedAtMs ?? 0,
     );
     _lastRoom = room;
     try {
@@ -1014,6 +1105,7 @@ class TogetherService extends ChangeNotifier {
       final prefs = await _prefs();
       await prefs.remove(_kLastRoomKey);
     } catch (_) {}
+    if (_disposed) return;
     notifyListeners();
   }
 
@@ -1057,13 +1149,160 @@ class TogetherService extends ChangeNotifier {
     }
   }
 
+  // ---- Room lifetime + auto-close (2.12.0) ----
+
+  /// Learns the room's creation time from host traffic (retained state,
+  /// status, heartbeat). First learn wins within a room: the host's
+  /// stamp is stable, and a later value can only be a stale re-delivery.
+  /// A guest that learns an already-expired room checks expiry at once
+  /// — that is how a joiner holding a dead room's code is refused even
+  /// when the host is gone and cannot answer presence itself.
+  void _learnRoomCreatedAt(int? createdAtMs) {
+    if (createdAtMs == null || createdAtMs <= 0) return;
+    if (_roomCreatedAtMs != null) return;
+    _roomCreatedAtMs = createdAtMs;
+    _checkRoomExpiry();
+  }
+
+  /// Ends the room now if its 45 minutes are up. Called from the 1 s
+  /// heartbeat tick and whenever the creation time is learned. A no-op
+  /// while no room is open, while the creation time is unknown, or
+  /// while an expiry is already running.
+  void _checkRoomExpiry() {
+    if (!isSessionActive || _expiring || _roomCreatedAtMs == null) return;
+    if (!roomExpired()) return;
+    _expiring = true;
+    unawaited(_expireRoom());
+  }
+
+  /// Test-only: runs the heartbeat tick's local work (expiry check,
+  /// remaining-time notify, stale-member prune, empty-room auto-close)
+  /// without a relay connection — the same work the 1 s tick does when
+  /// it is connected.
+  @visibleForTesting
+  void debugTickLifetimeForTest() {
+    _checkRoomExpiry();
+    _notifyRemainingTimeChanged();
+    _pruneStaleMembers();
+    _maybeAutoCloseEmptyRoom();
+  }
+
+  /// Test-only: runs the stale-member prune without a relay connection.
+  @visibleForTesting
+  void debugPruneStaleMembersForTest() => _pruneStaleMembers();
+
+  /// Notifies listeners when the displayed remaining time changed, so
+  /// the countdown ticks once a second. Called from the heartbeat tick,
+  /// which already runs every second while a room is open.
+  void _notifyRemainingTimeChanged() {
+    if (!isSessionActive) return;
+    final seconds = remainingTime.inSeconds;
+    if (seconds == _lastNotifiedRemainingSeconds) return;
+    _lastNotifiedRemainingSeconds = seconds;
+    notifyListeners();
+  }
+
+  /// Ends the room because its 45 minutes ran out.
+  ///
+  /// Local playback is untouched: ending the room never stops the
+  /// engine — anyone watching keeps watching alone, with full local
+  /// control (the hook unlocks once the session is gone). The room
+  /// code dies with the room (the rejoin snapshot is forgotten), so
+  /// the code can never be joined again. A guest still waiting to join
+  /// never really entered the room's movie, so they get the
+  /// join-rejection line ("ask the host for a new room") instead of
+  /// the ended line.
+  Future<void> _expireRoom() async {
+    if (!isSessionActive) return;
+    final asJoinRejection = _phase == TogetherPhase.waitingGuest;
+    final message = asJoinRejection
+        ? kTogetherRoomExpiredMessage
+        : kTogetherRoomEndedMessage;
+    // Set BEFORE leaveRoom: its notify reaches the auto-open
+    // coordinator synchronously, and the coordinator must already see
+    // that local playback survives this ending.
+    _sessionEndedKeepingPlayback = true;
+    await leaveRoom();
+    if (_disposed) return;
+    await dismissLastRoom();
+    if (_disposed) return;
+    _phase = TogetherPhase.error;
+    _error = message;
+    notifyListeners();
+  }
+
+  /// True when this phone is a guest in a room whose host is gone and
+  /// no one else is left in it — just this phone. "Gone" is the
+  /// existing decision, never a fresh guess: the host left with a `bye`
+  /// or presence `left`, or the 8 s silence timer fired. "No one else"
+  /// is the pruned member list: a guest whose heartbeats stopped is
+  /// only dropped after [kTogetherMemberStaleMs] (10 s), so a guest
+  /// briefly reconnecting is still a member and never triggers a close.
+  ///
+  /// Live rooms only: a guest still waiting to join keeps the 2.11.0
+  /// host-left screen (retry / leave) when the host leaves — the room
+  /// is not auto-closed out from under that screen. The close fires
+  /// once the room was actually shared (live) and everyone else is
+  /// gone, which is also when the guest's own player has already been
+  /// returned to the Together screen with the "Host left" line.
+  bool get _roomEmptyAndHostGone {
+    if (_role != TogetherRole.guest || !_hostGone) return false;
+    if (_phase != TogetherPhase.live) return false;
+    return _presentMembers.keys.every((id) => id == clientId);
+  }
+
+  /// Closes the room now if it has become empty (host gone, no one
+  /// else left). Called after presence leaves, host bye/silence, and
+  /// the heartbeat prune — never on a single missed beat. An expired
+  /// room is left to the expiry path, which owns the ended line.
+  void _maybeAutoCloseEmptyRoom() {
+    if (!isSessionActive || _closingEmpty || !_roomEmptyAndHostGone) {
+      return;
+    }
+    if (roomExpired()) return;
+    _closingEmpty = true;
+    unawaited(_autoCloseEmptyRoom());
+  }
+
+  /// The empty-room close itself: stop publishing, leave the topic,
+  /// stop the heartbeat, free the room state, release the code. The
+  /// retained room state is cleared too, so the code can never
+  /// resurrect the room for a later joiner. Local playback is
+  /// untouched — the last guest keeps watching alone.
+  Future<void> _autoCloseEmptyRoom() async {
+    if (!isSessionActive) return;
+    _sessionEndedKeepingPlayback = true;
+    final topic = _otp == null ? null : togetherTopicFor(_otp!);
+    if (isConnected && topic != null) {
+      _publish(topic, <String, dynamic>{
+        'kind': 'presence',
+        'senderId': clientId,
+        'role': _role?.name ?? 'guest',
+        'joined': false,
+        'timestampMs': _nowMs(),
+      });
+      // A guest leave alone does not clear the retained state — the
+      // host is still there then — but this room is empty now and its
+      // host is gone, so nothing will ever re-publish it.
+      _publishRaw(topic, Uint8List(0), retain: true);
+    }
+    await leaveRoom();
+    if (_disposed) return;
+    await dismissLastRoom();
+  }
+
   // ---- Creating and joining ----
 
   /// Host: generates a code, opens the relay and waits for a title to be
   /// picked. Returns false (and sets [error]) when the relay is unreachable.
-  /// The host types no name: they are `HOST 👑` everywhere.
+  /// The host types no name: they are `HOST` (crown icon) everywhere.
   Future<bool> createRoom() async {
     _resetRoomState();
+    // The room's 45 minutes run from this stamp (see [roomExpired]).
+    _roomCreatedAtMs = _nowMs();
+    _expiring = false;
+    _closingEmpty = false;
+    _sessionEndedKeepingPlayback = false;
     // Set AFTER the reset: the reset clears the last action.
     _lastAction = 'create';
     _role = TogetherRole.host;
@@ -1082,10 +1321,7 @@ class TogetherService extends ChangeNotifier {
     }
     await _persistLastRoom();
     _startHeartbeat();
-    _notePeerPresent(
-      clientId,
-      TogetherRole.host.name,
-    );
+    _notePeerPresent(clientId, TogetherRole.host.name);
     _publishPresence(joined: true);
     _publishStatusNow();
     return true;
@@ -1121,6 +1357,9 @@ class TogetherService extends ChangeNotifier {
       return false;
     }
     _resetRoomState();
+    _expiring = false;
+    _closingEmpty = false;
+    _sessionEndedKeepingPlayback = false;
     // Set AFTER the reset: the reset clears the last action.
     _lastAction = 'join';
     _role = TogetherRole.guest;
@@ -1129,6 +1368,18 @@ class TogetherService extends ChangeNotifier {
     _otp = code;
     _phase = TogetherPhase.waitingGuest;
     notifyListeners();
+    // A rejoin of a room whose creation time is already known (the
+    // persisted last room) is refused before connecting when its 45
+    // minutes are up — no relay round-trip, no hang. A fresh code
+    // carries no creation time yet; the host's presence answer (or the
+    // retained state / heartbeat) enforces expiry for that join.
+    final lastCreatedAt = _lastRoom?.createdAtMs ?? 0;
+    if (_lastRoom?.otp == code && roomExpired(createdAtMs: lastCreatedAt)) {
+      _error = kTogetherRoomExpiredMessage;
+      _phase = TogetherPhase.error;
+      notifyListeners();
+      return false;
+    }
     final failure = await _connectAndSubscribe();
     if (failure != null) {
       _phase = TogetherPhase.error;
@@ -1139,11 +1390,7 @@ class TogetherService extends ChangeNotifier {
     await _persistLastRoom();
     _startHeartbeat();
     _armHostSilenceTimer();
-    _notePeerPresent(
-      clientId,
-      TogetherRole.guest.name,
-      displayName: name,
-    );
+    _notePeerPresent(clientId, TogetherRole.guest.name, displayName: name);
     _publishPresence(joined: true);
     // The host answers this presence with a fresh status publish, so the
     // waiting screen learns what the host is doing within a heartbeat.
@@ -1160,9 +1407,23 @@ class TogetherService extends ChangeNotifier {
     final last = _lastRoom;
     if (last == null) return false;
     if (last.role == TogetherRole.host.name) {
+      // An expired room is not resurrected by rejoining: the host
+      // creates a fresh room instead.
+      if (roomExpired(createdAtMs: last.createdAtMs)) {
+        _error = kTogetherRoomExpiredMessage;
+        _phase = TogetherPhase.error;
+        notifyListeners();
+        return false;
+      }
       // adoptRejoin travels as a parameter: setting the flag here would be
-      // wiped by the reset inside createRoomWithCode.
-      final ok = await createRoomWithCode(last.otp, adoptRejoin: true);
+      // wiped by the reset inside createRoomWithCode. The original
+      // creation time travels the same way, so a rejoin restores the
+      // room's remaining lifetime instead of starting a fresh 45 minutes.
+      final ok = await createRoomWithCode(
+        last.otp,
+        adoptRejoin: true,
+        createdAtMs: last.createdAtMs,
+      );
       if (ok && last.media != null) {
         _pendingMedia = last.media;
         notifyListeners();
@@ -1175,8 +1436,18 @@ class TogetherService extends ChangeNotifier {
   /// Like [createRoom] but with a fixed code — used only for a host rejoin.
   /// [adoptRejoin] keeps the host in "adopt the room's current position"
   /// mode until the retained state / first heartbeat answers.
-  Future<bool> createRoomWithCode(String otp, {bool adoptRejoin = false}) async {
+  Future<bool> createRoomWithCode(
+    String otp, {
+    bool adoptRejoin = false,
+    int? createdAtMs,
+  }) async {
     _resetRoomState();
+    _roomCreatedAtMs = (createdAtMs != null && createdAtMs > 0)
+        ? createdAtMs
+        : _nowMs();
+    _expiring = false;
+    _closingEmpty = false;
+    _sessionEndedKeepingPlayback = false;
     _adoptingRejoin = adoptRejoin;
     // Set AFTER the reset: the reset clears the last action.
     _lastAction = 'create';
@@ -1227,16 +1498,14 @@ class TogetherService extends ChangeNotifier {
         'timestampMs': DateTime.now().millisecondsSinceEpoch,
       });
       if (wasHost) {
-        _publish(topic, <String, dynamic>{
-          'kind': 'bye',
-          'senderId': clientId,
-        });
+        _publish(topic, <String, dynamic>{'kind': 'bye', 'senderId': clientId});
         // Clear the retained room state so a late joiner does not resurrect
         // a finished room: an empty retained publish deletes it.
         _publishRaw(topic, Uint8List(0), retain: true);
       }
     }
     await _persistLastRoom();
+    if (_disposed) return;
     _resetRoomState();
     _phase = TogetherPhase.idle;
     _disconnect();
@@ -1256,6 +1525,8 @@ class TogetherService extends ChangeNotifier {
     _waitingStaleTimer = null;
     _role = null;
     _otp = null;
+    _roomCreatedAtMs = null;
+    _lastNotifiedRemainingSeconds = null;
     _roomState = null;
     _pendingMedia = null;
     _error = null;
@@ -1496,6 +1767,7 @@ class TogetherService extends ChangeNotifier {
       sequence: _sequence,
       hostId: clientId,
       playbackSpeed: _lastLocalSpeed,
+      createdAtMs: _roomCreatedAtMs ?? 0,
     );
     _roomState = state;
     _lastPublishedPositionMs = pos;
@@ -1552,6 +1824,9 @@ class TogetherService extends ChangeNotifier {
       if (media != null) 'media': media.toJson(),
       'senderId': clientId,
       'timestampMs': DateTime.now().millisecondsSinceEpoch,
+      // How a guest joining a not-yet-live room learns the room's age
+      // at once, instead of waiting for the first heartbeat.
+      if (_roomCreatedAtMs != null) 'createdAtMs': _roomCreatedAtMs,
     });
   }
 
@@ -1562,11 +1837,7 @@ class TogetherService extends ChangeNotifier {
   /// never wipes a name a presence event already delivered. Notifies only
   /// when a member is actually new or their name arrived — heartbeats call
   /// this every 1 s and must not rebuild the room on every beat.
-  void _notePeerPresent(
-    String senderId,
-    String role, {
-    String? displayName,
-  }) {
+  void _notePeerPresent(String senderId, String role, {String? displayName}) {
     // A peer with no id is not a member: an empty host id (an old client
     // that never sent one) used to land in the member list as a nameless
     // guest and could even clobber [_hostClientId] with ''.
@@ -1614,7 +1885,7 @@ class TogetherService extends ChangeNotifier {
   /// list and the guest cap track the room as it actually is.
   void _pruneStaleMembers() {
     if (_presentMembers.length <= 1) return;
-    final now = DateTime.now().millisecondsSinceEpoch;
+    final now = _nowMs();
     var removed = false;
     _presentMembers.removeWhere((id, _) {
       if (id == clientId) return false;
@@ -1690,13 +1961,14 @@ class TogetherService extends ChangeNotifier {
   }) async {
     final body = text.trim();
     if (body.isEmpty || !isSessionActive || !isConnected) return;
-    final message = _buildMessage(text: body, replyToId: replyToId, replyToText: replyToText);
+    final message = _buildMessage(
+      text: body,
+      replyToId: replyToId,
+      replyToText: replyToText,
+    );
     _messages.add(message);
     notifyListeners();
-    _publishToRoom(<String, dynamic>{
-      'kind': 'chat',
-      ...message.toJson(),
-    });
+    _publishToRoom(<String, dynamic>{'kind': 'chat', ...message.toJson()});
   }
 
   /// Sends a photo from the gallery/camera roll — up to 5 MB (2.8.0,
@@ -1873,7 +2145,8 @@ class TogetherService extends ChangeNotifier {
       timestampMs: DateTime.now().millisecondsSinceEpoch,
       // 2.11.0: the sender's identity travels with the message — a
       // guest's typed name, or the host's role (the panel renders the host
-      // as `HOST 👑` from the role alone; the host types no name).
+      // as `HOST` (crown icon) from the role alone; the host types no
+      // name).
       senderName: _role == TogetherRole.guest ? _ownDisplayName : null,
       senderRole: _role?.name,
     );
@@ -2109,7 +2382,11 @@ class TogetherService extends ChangeNotifier {
     }
   }
 
-  void _publish(String topic, Map<String, dynamic> json, {bool retain = false}) {
+  void _publish(
+    String topic,
+    Map<String, dynamic> json, {
+    bool retain = false,
+  }) {
     // Test tap: captures the publish even with no live relay (see
     // [debugPublishSinkForTest]). The real publish below still no-ops
     // offline — the sink never replaces the relay. This sits here, not
@@ -2136,12 +2413,7 @@ class TogetherService extends ChangeNotifier {
     // addBuffer has the same type, so build the buffer directly.
     final buffer = Uint8Buffer()..addAll(payload);
     try {
-      client.publishMessage(
-        topic,
-        MqttQos.atLeastOnce,
-        buffer,
-        retain: retain,
-      );
+      client.publishMessage(topic, MqttQos.atLeastOnce, buffer, retain: retain);
     } catch (_) {
       // A failed publish is a dropped beat, not a crash: the next heartbeat
       // or state publish carries the same facts.
@@ -2227,6 +2499,7 @@ class TogetherService extends ChangeNotifier {
     }
     if (message.senderId.isEmpty) return;
     _notePeerPresent(message.senderId, TogetherRole.host.name);
+    _learnRoomCreatedAt(message.createdAtMs);
     _roomStatus = message.status;
     // A status proves the host is here — a host marked gone by the
     // silence timer is back the moment its status arrives — and it
@@ -2275,6 +2548,25 @@ class TogetherService extends ChangeNotifier {
       // guest resyncs to the exact live position at once instead of
       // waiting for the next 1 s state tick.
       if (_role == TogetherRole.host && event.role == TogetherRole.guest.name) {
+        // 2.12.0: the room has expired — turn the joiner away with the
+        // expired line, not the room-full one. Checked before the cap:
+        // an expired room rejects everyone, even under the cap. The
+        // rejection is targeted ([TogetherRoomFullEvent.targetId]): only
+        // that phone acts on it. The joiner is dropped from the member
+        // list at once, so they never show in the room or count twice.
+        if (roomExpired()) {
+          _presentMembers.remove(event.senderId);
+          _publishToRoom(
+            TogetherRoomFullEvent(
+              targetId: event.senderId,
+              senderId: clientId,
+              timestampMs: _nowMs(),
+              message: kTogetherRoomExpiredMessage,
+            ).toJson(),
+          );
+          notifyListeners();
+          return;
+        }
         // 2.11.0 guest cap: the host + [kTogetherMaxGuests] guests, no
         // more. The count is taken AFTER noting this joiner, so the 6th
         // guest is the one turned away — with a short honest message
@@ -2309,14 +2601,18 @@ class TogetherService extends ChangeNotifier {
         _hostSilenceTimer?.cancel();
       }
     }
+    // The room may just have become empty (host gone, last guest out):
+    // close it if so — never on a single leave while anyone remains.
+    _maybeAutoCloseEmptyRoom();
     _armHostSilenceTimer();
     notifyListeners();
   }
 
-  /// A room-full rejection from the host (2.11.0 guest cap). Only the
-  /// phone it names acts on it: that guest leaves the room cleanly and
-  /// then sees the short honest line, with Retry to try again. Every
-  /// other phone ignores it.
+  /// A targeted rejection from the host (2.11.0 guest cap, 2.12.0
+  /// room expiry). Only the phone it names acts on it: that guest
+  /// leaves the room cleanly and then sees the short honest line the
+  /// host sent — the room-full line, or the expired line — with Retry
+  /// to try again. Every other phone ignores it.
   void _handleRoomFull(Map<String, dynamic> json) {
     TogetherRoomFullEvent event;
     try {
@@ -2329,21 +2625,23 @@ class TogetherService extends ChangeNotifier {
     if (_phase != TogetherPhase.waitingGuest && _phase != TogetherPhase.live) {
       return;
     }
-    unawaited(_leaveAfterRoomFull());
+    unawaited(_leaveAfterRoomFull(message: event.message));
   }
 
-  /// Leaves after a room-full rejection, then restores the join context
+  /// Leaves after a targeted rejection, then restores the join context
   /// the leave wiped — the code and the typed name — so the error screen's
   /// Retry rejoins as the same guest instead of creating a room as host.
-  Future<void> _leaveAfterRoomFull() async {
+  /// [message] is the host's line (room-full, or expired): shown as-is.
+  Future<void> _leaveAfterRoomFull({String? message}) async {
     final otp = _otp;
     await leaveRoom();
+    if (_disposed) return;
     if (otp != null) {
       _otp = otp;
       _lastAction = 'join';
     }
     _phase = TogetherPhase.error;
-    _error = kTogetherRoomFullMessage;
+    _error = message ?? kTogetherRoomFullMessage;
     notifyListeners();
   }
 
@@ -2396,6 +2694,13 @@ class TogetherService extends ChangeNotifier {
     final previous = _roomState;
     final mediaChanged = previous?.media != state.media;
     final playingFlipped = previous?.playing != state.playing;
+    // 2.12.0: a speed-only change notifies too. A 1x -> 2x flip moves the
+    // target slope, not the instantaneous target, so the targetMoved
+    // check below misses it — and without a notification the guest's
+    // hook, the Live indicator and the auto-open coordinator never
+    // learn the host changed speed until the next tick that happens to
+    // move the target enough. Speed is host state, not a local guess.
+    final speedChanged = previous?.playbackSpeed != state.playbackSpeed;
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     final targetMoved =
         previous != null &&
@@ -2404,6 +2709,9 @@ class TogetherService extends ChangeNotifier {
                 .abs() >=
             kSyncNotifyThresholdMs;
     _roomState = state;
+    // The retained state carries the room's creation time: a late
+    // joiner learns the room's age the moment it arrives.
+    _learnRoomCreatedAt(state.createdAtMs);
     // The state is authoritative about the title (and its source): the old
     // `??=` left a re-shared title's predecessor in [_pendingMedia] — the
     // room card and the rejoin snapshot then kept showing the old title
@@ -2437,6 +2745,7 @@ class TogetherService extends ChangeNotifier {
     if (wasWaiting ||
         mediaChanged ||
         playingFlipped ||
+        speedChanged ||
         targetMoved ||
         hostBack) {
       notifyListeners();
@@ -2678,7 +2987,10 @@ class TogetherService extends ChangeNotifier {
     if (senderId == null || senderId == clientId || positionMs == null) {
       return;
     }
-    final now = DateTime.now().millisecondsSinceEpoch;
+    final now = _nowMs();
+    // The room's creation time rides the host's beat: a guest learns
+    // it here when the retained state and status both missed it.
+    _learnRoomCreatedAt((json['createdAtMs'] as num?)?.toInt());
     _peerHeartbeats[senderId] = HeartbeatSample(
       positionMs: positionMs,
       receivedAtMs: now,
@@ -2697,6 +3009,24 @@ class TogetherService extends ChangeNotifier {
             : TogetherRole.host.name);
     final displayName = json['displayName'] as String?;
     _notePeerPresent(senderId, role, displayName: displayName);
+    // 2.12.0: a guest the host only learns about from heartbeats is
+    // still turned away when the room has expired — same targeted
+    // rejection as the presence path, with the expired line.
+    if (_role == TogetherRole.host &&
+        role == TogetherRole.guest.name &&
+        roomExpired()) {
+      _presentMembers.remove(senderId);
+      _publishToRoom(
+        TogetherRoomFullEvent(
+          targetId: senderId,
+          senderId: clientId,
+          timestampMs: now,
+          message: kTogetherRoomExpiredMessage,
+        ).toJson(),
+      );
+      notifyListeners();
+      return;
+    }
     // 2.11.0 guest cap, heartbeat path: a guest the host only learns
     // about from heartbeats (joined while the host was away) counts just
     // the same as one learned from presence — the 6th is turned away with
@@ -2771,6 +3101,8 @@ class TogetherService extends ChangeNotifier {
     // stale-state bug this pass hunts.
     _roomStatus = TogetherRoomStatus.hostLeft;
     _hostSilenceTimer?.cancel();
+    // The room may just have become empty: close it if so.
+    _maybeAutoCloseEmptyRoom();
     notifyListeners();
   }
 
@@ -2822,11 +3154,17 @@ class TogetherService extends ChangeNotifier {
     _heartbeatTimer?.cancel();
     _persistTimer?.cancel();
     _heartbeatTimer = Timer.periodic(kTogetherHeartbeatInterval, (_) {
+      // Lifetime first, even while disconnected: the countdown must
+      // tick (and expiry must fire) on a blip too, not freeze until
+      // the relay comes back.
+      _checkRoomExpiry();
+      _notifyRemainingTimeChanged();
       if (!isConnected) return;
       // A member that stopped beating is gone even if it never said
       // goodbye: prune before publishing, so the count this beat implies
       // is the count the room shows.
       _pruneStaleMembers();
+      _maybeAutoCloseEmptyRoom();
       // The host's heartbeat repeats its current status (and picked title):
       // it is the backstop that keeps a guest's waiting screen live even
       // when a status push is lost. A guest heartbeat carries position only.
@@ -2842,6 +3180,9 @@ class TogetherService extends ChangeNotifier {
         'role': _role?.name ?? 'guest',
         'positionMs': _lastLocalPositionMs,
         'timestampMs': DateTime.now().millisecondsSinceEpoch,
+        // The room's creation time, so every phone learns (and
+        // re-learns) the lifetime from the 1 s beat.
+        if (_roomCreatedAtMs != null) 'createdAtMs': _roomCreatedAtMs,
         // The sender's engine speed, so the other phone can advance this
         // heartbeat's position at the right rate (see [HeartbeatSample]).
         'playbackSpeed': _lastLocalSpeed,
@@ -2875,6 +3216,10 @@ class TogetherService extends ChangeNotifier {
       _hostGone = true;
       _roomStatus = TogetherRoomStatus.hostLeft;
       notifyListeners();
+      // Silence is the existing "host is truly gone" decision (8 s, and
+      // never while reconnecting): if no one else is left either, the
+      // room closes itself now instead of lingering as an empty room.
+      _maybeAutoCloseEmptyRoom();
     });
   }
 

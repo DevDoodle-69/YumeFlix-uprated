@@ -6,9 +6,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:yumeflix/features/together/models.dart';
 import 'package:yumeflix/features/together/together_service.dart';
 
-/// 2.11.0 guest names + HOST 👑: a guest types their name to join (required,
+/// 2.11.0 guest names + HOST: a guest types their name to join (required,
 /// remembered, pre-filled next time), chat shows the typed name, and the
-/// room creator is HOST 👑 everywhere — icon + label, never colour alone.
+/// room creator is HOST everywhere — icon + label, never colour alone.
 ///
 /// Offline through the service's test seams (name validation, the join
 /// gate, inbound chat payloads, presence/member state) — no relay, no
@@ -156,7 +156,7 @@ void main() {
       );
     });
 
-    test('a host message renders HOST 👑 (crown + label)', () {
+    test('a host message renders HOST (crown + label)', () {
       final guest = newService();
       addTearDown(guest.dispose);
       guest.debugEnterRoomForTest(role: TogetherRole.guest, otp: '123456');
@@ -171,7 +171,7 @@ void main() {
       expect(guest.messages, hasLength(1));
       expect(
         togetherChatSenderDisplayName(guest.messages.single, mine: false),
-        'HOST 👑',
+        'HOST',
       );
     });
 
@@ -203,7 +203,7 @@ void main() {
   });
 
   group('member display labels', () {
-    test('host is HOST 👑, guests are their typed names', () {
+    test('host is HOST, guests are their typed names', () {
       const host = TogetherMember(clientId: 'host-1', role: 'host');
       const guest = TogetherMember(
         clientId: 'guest-a',
@@ -211,7 +211,7 @@ void main() {
         displayName: 'Aisha',
       );
       const nameless = TogetherMember(clientId: 'guest-b', role: 'guest');
-      expect(host.displayLabel, 'HOST 👑');
+      expect(host.displayLabel, 'HOST');
       expect(host.isHost, isTrue);
       expect(guest.displayLabel, 'Aisha');
       expect(guest.isHost, isFalse);
@@ -239,7 +239,7 @@ void main() {
       }));
       expect(
         guest.members.map((m) => m.displayLabel),
-        ['HOST 👑', 'Aisha'],
+        ['HOST', 'Aisha'],
       );
     });
   });

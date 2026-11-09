@@ -200,30 +200,30 @@ void main() {
   });
 
   group('member list + presence label', () {
-    test('guest sees HOST 👑 + typed guest names, in join order', () {
+    test('guest sees HOST + typed guest names, in join order', () {
       final guest = newService();
       addTearDown(guest.dispose);
       guest.debugEnterRoomForTest(role: TogetherRole.guest, otp: '123456');
       guest.debugReceivePayloadForTest(
         presencePayload(senderId: 'host-1', role: 'host'),
       );
-      expect(guest.presenceLabel, 'HOST 👑 in room');
-      expect(guest.members.map((m) => m.displayLabel), ['HOST 👑']);
+      expect(guest.presenceLabel, 'HOST in room');
+      expect(guest.members.map((m) => m.displayLabel), ['HOST']);
       guest.debugReceivePayloadForTest(
         presencePayload(senderId: 'guest-a', role: 'guest', displayName: 'Aisha'),
       );
       guest.debugReceivePayloadForTest(
         presencePayload(senderId: 'guest-b', role: 'guest', displayName: 'Arjun'),
       );
-      expect(guest.presenceLabel, 'HOST 👑 + 2 guests in room');
+      expect(guest.presenceLabel, 'HOST + 2 guests in room');
       expect(
         guest.members.map((m) => m.displayLabel),
-        ['HOST 👑', 'Aisha', 'Arjun'],
+        ['HOST', 'Aisha', 'Arjun'],
       );
       expect(guest.members.first.isHost, isTrue);
     });
 
-    test('one guest reads "HOST 👑 + Guest in room"', () {
+    test('one guest reads "HOST + Guest in room"', () {
       final guest = newService();
       addTearDown(guest.dispose);
       guest.debugEnterRoomForTest(role: TogetherRole.guest, otp: '123456');
@@ -233,7 +233,7 @@ void main() {
       guest.debugReceivePayloadForTest(
         presencePayload(senderId: 'guest-a', role: 'guest', displayName: 'Aisha'),
       );
-      expect(guest.presenceLabel, 'HOST 👑 + Guest in room');
+      expect(guest.presenceLabel, 'HOST + Guest in room');
     });
 
     test('member list updates when a guest leaves', () {
@@ -253,8 +253,8 @@ void main() {
       guest.debugReceivePayloadForTest(
         presencePayload(senderId: 'guest-a', role: 'guest', joined: false),
       );
-      expect(guest.members.map((m) => m.displayLabel), ['HOST 👑', 'Arjun']);
-      expect(guest.presenceLabel, 'HOST 👑 + Guest in room');
+      expect(guest.members.map((m) => m.displayLabel), ['HOST', 'Arjun']);
+      expect(guest.presenceLabel, 'HOST + Guest in room');
     });
 
     test('heartbeats teach the room who is in it, with names', () {
@@ -269,7 +269,7 @@ void main() {
       );
       expect(
         guest.members.map((m) => m.displayLabel),
-        ['HOST 👑', 'Aisha'],
+        ['HOST', 'Aisha'],
       );
       // A later heartbeat without a name keeps the name it already has.
       guest.debugReceivePayloadForTest(

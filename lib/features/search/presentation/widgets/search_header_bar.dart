@@ -158,10 +158,7 @@ class _SearchScopeSwitcherState extends State<SearchScopeSwitcher> {
                         children: [
                           Transform.translate(
                             offset: const Offset(0, -1.5),
-                            child: const Text(
-                              '🍿',
-                              style: TextStyle(fontSize: 14),
-                            ),
+                            child: const Icon(Icons.movie_rounded, size: 14),
                           ),
                           const SizedBox(width: 6),
                           // The pill is a fixed 310 dp wide, so each half has

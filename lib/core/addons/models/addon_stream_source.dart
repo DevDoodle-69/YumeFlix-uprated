@@ -282,7 +282,9 @@ class AddonStreamSource {
     r'\b(cam|camrip|hdcam|telesync|hdts|\bts\b|screener|scr)\b',
     caseSensitive: false,
   );
-  static final RegExp _seeders = RegExp(r'(?:👤|seeders?[:\s]*)\s*(\d+)');
+  static final RegExp _seeders = RegExp(
+    r'(?:seeders?|peers?)[:\s]*\s*(\d+)',
+  );
   static final RegExp _size = RegExp(
     r'(\d+(?:[.,]\d+)?)\s*(gb|mb|gib|mib)\b',
     caseSensitive: false,

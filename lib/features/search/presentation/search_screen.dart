@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/utils/layout_constants.dart';
 import '../../../core/utils/responsive_breakpoints.dart';
+import '../../../features/together/presentation/together_history_section.dart';
 import '../../../shared/widgets/no_results_state.dart';
 import '../../../shared/widgets/shimmer_placeholder.dart';
 import 'search_history_provider.dart';
@@ -348,7 +349,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                   value: SearchFilter.content,
                   child: Row(
                     children: [
-                      const Text('🍿', style: TextStyle(fontSize: 18)),
+                      const Icon(Icons.movie_rounded, size: 18),
                       const SizedBox(width: 12),
                       const Expanded(child: Text('Non Livestreams')),
                       if (!isLive)
@@ -397,7 +398,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                         height: 18,
                         child: Center(child: LiveTvIndicator(isActive: true)),
                       )
-                    : const Text('🍿', style: TextStyle(fontSize: 18)),
+                    : const Icon(Icons.movie_rounded, size: 18),
               ),
             ),
           ),
@@ -786,26 +787,38 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     final isInputEmpty = _controller.text.trim().isEmpty;
 
     if (query.isEmpty || isInputEmpty) {
-      return Center(
+      // A host room is active: the host can pick from history right
+      // here instead of typing a title first. The section renders
+      // nothing for a guest or outside a room, so this stays a plain
+      // empty state for everyone else.
+      return SingleChildScrollView(
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              Icons.movie_filter_rounded,
-              size: 64,
-              color: Theme.of(context).colorScheme.onSurfaceVariant
-                  .withValues(alpha: 0.65),
-            ),
-            const SizedBox(height: LayoutConstants.spacingMd),
-            Text(
-              l10n.searchFavoriteContent,
-              style: Theme.of(context).textTheme.bodyLarge,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              l10n.pressSearchOrEnter,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
+            const TogetherHistorySection(),
+            const SizedBox(height: 24),
+            Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.movie_filter_rounded,
+                    size: 64,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant
+                        .withValues(alpha: 0.65),
+                  ),
+                  const SizedBox(height: LayoutConstants.spacingMd),
+                  Text(
+                    l10n.searchFavoriteContent,
+                    style: Theme.of(context).textTheme.bodyLarge,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    l10n.pressSearchOrEnter,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],

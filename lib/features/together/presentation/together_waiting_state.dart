@@ -6,7 +6,9 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/design_tokens.dart';
 
 import '../connection.dart';
+import '../models.dart';
 import '../together_service.dart';
+import 'floating_together_orb.dart' show TogetherRoomRemainingIndicator;
 
 /// The guest waiting state: a live screen, never a dead one.
 ///
@@ -50,8 +52,7 @@ class TogetherGuestWaitingState extends StatefulWidget {
       _TogetherGuestWaitingStateState();
 }
 
-class _TogetherGuestWaitingStateState
-    extends State<TogetherGuestWaitingState> {
+class _TogetherGuestWaitingStateState extends State<TogetherGuestWaitingState> {
   Timer? _clock;
 
   @override
@@ -78,8 +79,7 @@ class _TogetherGuestWaitingStateState
   String _elapsed() {
     final since = widget.service.waitingSinceMs;
     if (since == null) return '';
-    final seconds =
-        (DateTime.now().millisecondsSinceEpoch - since) ~/ 1000;
+    final seconds = (DateTime.now().millisecondsSinceEpoch - since) ~/ 1000;
     final minutes = seconds ~/ 60;
     final rest = seconds % 60;
     return 'Waiting $minutes:${rest.toString().padLeft(2, '0')}';
@@ -109,6 +109,105 @@ class _TogetherGuestWaitingStateState
     // re-syncs automatically when the relay answers; nothing here asks
     // the guest to do anything.
     final reconnecting = service.reconnecting;
+
+    // 2.12.0 LATE JOINER: a guest who joins a room that is ALREADY live
+    // must never sit on the waiting screen. The join starts in
+    // `waitingGuest` with the default `hostBrowsing` status, and only
+    // the retained live state flips the phase to `live` — until it (or
+    // the auto-open coordinator) arrives, the guest would otherwise
+    // wait under the wrong copy, "Host is still finding a movie…".
+    // Any live signal that HAS arrived proves the room is already live:
+    // a live room status (`hostPlaying` / `hostPaused`, pushed by the
+    // host in answer to this guest's presence `joined`) or an auto-open
+    // already resolving (`guestAutoOpenPending`). While one of those
+    // holds, this card yields to a proper loading state — never the
+    // waiting text, never a blank screen — and the phase flip (or the
+    // coordinator's open) takes over from there. The one window no
+    // widget can distinguish is "no live signal has arrived yet",
+    // which is genuinely indistinguishable from a browsing host: the
+    // room's creation time alone cannot tell a live room from a
+    // browsing one, and only the retained live state (or the host's
+    // status answer to this guest's presence) proves it. The 30 s
+    // stale card below is the honest fallback for that window.
+    // Host-gone and reconnecting still win over this branch: a dead
+    // room is not a joining room.
+    final joiningLive =
+        service.guestAutoOpenPending ||
+        service.roomStatus == TogetherRoomStatus.hostPlaying ||
+        service.roomStatus == TogetherRoomStatus.hostPaused;
+    if (joiningLive && !hostGone && !reconnecting) {
+      return MediaQuery.withClampedTextScaling(
+        maxScaleFactor: 1.3,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Center(
+              child: SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  color: YumeDesign.accentLight,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Joining the live session…',
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
+                decoration: TextDecoration.none,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Opening the host’s title — playback starts automatically.',
+              textAlign: TextAlign.center,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 14,
+                color: YumeDesign.textSecondary,
+                decoration: TextDecoration.none,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              service.presenceLabel,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: colorScheme.onSurfaceVariant,
+                fontSize: 12,
+                decoration: TextDecoration.none,
+              ),
+            ),
+            if (service.roomEndsAtMs != null) ...[
+              const SizedBox(height: 12),
+              Center(
+                child: TogetherRoomRemainingIndicator(
+                  remaining: service.remainingTime,
+                ),
+              ),
+            ],
+            const SizedBox(height: 16),
+            OutlinedButton(
+              onPressed: widget.onLeave,
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(double.infinity, 44),
+              ),
+              child: const Text('Leave room'),
+            ),
+          ],
+        ),
+      );
+    }
 
     // Bounded by construction: the text scale is capped (a large system
     // font scale must not blow the waiting copy up past the card), every
@@ -206,6 +305,14 @@ class _TogetherGuestWaitingStateState
                 decoration: TextDecoration.none,
               ),
             ),
+            if (service.roomEndsAtMs != null) ...[
+              const SizedBox(height: 12),
+              Center(
+                child: TogetherRoomRemainingIndicator(
+                  remaining: service.remainingTime,
+                ),
+              ),
+            ],
             if (reconnecting) ...[
               const SizedBox(height: 8),
               Text(

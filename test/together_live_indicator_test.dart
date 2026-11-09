@@ -118,8 +118,7 @@ void main() {
       expect(host.showStartButton, isFalse);
     });
 
-    test('leaving the player hides Live at once; the session survives',
-        () {
+    test('leaving the player hides Live at once; the session survives', () {
       final host = hostReadyToPlay();
       addTearDown(host.dispose);
       play(host);
@@ -174,13 +173,17 @@ void main() {
       expect(host.startState, TogetherStartState.hidden);
     });
 
-    test('guest: live phase alone is NOT showing — no player, no Live',
-        () {
+    test('guest: live phase alone is NOT showing — no player, no Live', () {
       final guest = newService();
       addTearDown(guest.dispose);
       guest.debugEnterRoomForTest(role: TogetherRole.guest, otp: '123456');
       guest.debugReceivePayloadForTest(
-        statePayload(media: media, sequence: 1, positionMs: 12000, playing: true),
+        statePayload(
+          media: media,
+          sequence: 1,
+          positionMs: 12000,
+          playing: true,
+        ),
       );
       expect(guest.phase, TogetherPhase.live);
       expect(guest.isLive, isTrue);
@@ -240,8 +243,7 @@ void main() {
   });
 
   group('liveHealth (service): green / orange thresholds', () {
-    test('healthy with no measurements yet — no signal is not a failure',
-        () {
+    test('healthy with no measurements yet — no signal is not a failure', () {
       final host = hostReadyToPlay();
       addTearDown(host.dispose);
       play(host);
@@ -347,16 +349,11 @@ void main() {
     Future<void> pumpOrb(WidgetTester tester, TogetherService service) async {
       await tester.pumpWidget(
         ProviderScope(
-          overrides: [
-            togetherServiceProvider.overrideWith((ref) => service),
-          ],
+          overrides: [togetherServiceProvider.overrideWith((ref) => service)],
           child: const MaterialApp(
             home: Scaffold(
               body: Stack(
-                children: <Widget>[
-                  Placeholder(),
-                  FloatingTogetherOrb(),
-                ],
+                children: <Widget>[Placeholder(), FloatingTogetherOrb()],
               ),
             ),
           ),
@@ -365,8 +362,9 @@ void main() {
       await tester.pump();
     }
 
-    testWidgets('live + playing in the player: the orb renders nothing',
-        (tester) async {
+    testWidgets('live + playing in the player: the orb renders nothing', (
+      tester,
+    ) async {
       final service = hostReadyToPlay();
       await pumpOrb(tester, service);
       play(service);
@@ -410,20 +408,29 @@ void main() {
       expect(find.text('Enjoy Together'), findsOneWidget);
     });
 
-    testWidgets('guest live on the wire but not watching: no Live pill',
-        (tester) async {
+    testWidgets('guest live on the wire but not watching: no pill at '
+        'all — never a Live pill, never the neutral pill', (tester) async {
       final service = newService();
       await pumpOrb(tester, service);
       service.debugEnterRoomForTest(role: TogetherRole.guest, otp: '123456');
       service.debugReceivePayloadForTest(
-        statePayload(media: media, sequence: 1, positionMs: 12000, playing: true),
+        statePayload(
+          media: media,
+          sequence: 1,
+          positionMs: 12000,
+          playing: true,
+        ),
       );
       await tester.pump();
 
       expect(service.phase, TogetherPhase.live);
       expect(service.isShowingLive, isFalse);
       expect(find.text('Live'), findsNothing);
-      expect(find.text('Enjoy Together'), findsOneWidget);
+      // 2.12.0 guest rule: no floating pill for guests, ever — the
+      // guest's live playback is driven by the auto-open coordinator,
+      // never by this orb. (This used to expect the neutral pill here.)
+      expect(find.text('Enjoy Together'), findsNothing);
+      expect(find.byIcon(Icons.group_rounded), findsNothing);
     });
 
     testWidgets('leaving the room removes the orb entirely', (tester) async {
@@ -442,8 +449,7 @@ void main() {
     });
   });
 
-  group('VlcPlayerControls bottom row: Live sits next to the chat icon',
-      () {
+  group('VlcPlayerControls bottom row: Live sits next to the chat icon', () {
     Future<void> pumpControls(
       WidgetTester tester, {
       TogetherLiveHealth? health,
@@ -509,14 +515,13 @@ void main() {
           (widget.decoration as BoxDecoration?)?.color == color,
     );
 
-    testWidgets('healthy: green blinking dot + Live + healthy semantics',
-        (tester) async {
+    testWidgets('healthy: green blinking dot + Live + healthy semantics', (
+      tester,
+    ) async {
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
-            body: TogetherLiveIndicator(
-              health: TogetherLiveHealth.healthy,
-            ),
+            body: TogetherLiveIndicator(health: TogetherLiveHealth.healthy),
           ),
         ),
       );
@@ -543,14 +548,13 @@ void main() {
       );
     });
 
-    testWidgets('degraded: orange dot + Live + degraded semantics',
-        (tester) async {
+    testWidgets('degraded: orange dot + Live + degraded semantics', (
+      tester,
+    ) async {
       await tester.pumpWidget(
         const MaterialApp(
           home: Scaffold(
-            body: TogetherLiveIndicator(
-              health: TogetherLiveHealth.degraded,
-            ),
+            body: TogetherLiveIndicator(health: TogetherLiveHealth.degraded),
           ),
         ),
       );

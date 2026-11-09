@@ -411,7 +411,7 @@ class SubtitleSearch extends _$SubtitleSearch {
     if (url.isEmpty) {
       if (kDebugMode) {
         print(
-          "[SubtitleDownload] ❌ Failed: No download URL could be resolved for '${subtitle.name}' from ${subtitle.source}",
+          "[SubtitleDownload] [FAIL] Failed: No download URL could be resolved for '${subtitle.name}' from ${subtitle.source}",
         );
       }
       return null;
@@ -443,7 +443,7 @@ class SubtitleSearch extends _$SubtitleSearch {
       if (response.data == null || response.data!.isEmpty) {
         if (kDebugMode) {
           print(
-            "[SubtitleDownload] ❌ Failed: Empty response body from ${subtitle.source} (HTTP ${response.statusCode})",
+            "[SubtitleDownload] [FAIL] Failed: Empty response body from ${subtitle.source} (HTTP ${response.statusCode})",
           );
         }
         return null;
@@ -471,13 +471,13 @@ class SubtitleSearch extends _$SubtitleSearch {
         );
         if (extractedPath != null) {
           if (kDebugMode) {
-            debugPrint("[SubtitleDownload] ✅ Extracted: $extractedPath");
+            debugPrint("[SubtitleDownload] [OK] Extracted: $extractedPath");
           }
           return extractedPath;
         }
         if (kDebugMode) {
           debugPrint(
-            "[SubtitleDownload] ❌ ZIP contained no .srt/.vtt/.ass files.",
+            "[SubtitleDownload] [FAIL] ZIP contained no .srt/.vtt/.ass files.",
           );
         }
       } else if (bytes.length > 2 && bytes[0] == 0x1F && bytes[1] == 0x8B) {
@@ -500,7 +500,7 @@ class SubtitleSearch extends _$SubtitleSearch {
         // RAR archive - not supported
         if (kDebugMode) {
           print(
-            "[SubtitleDownload] ❌ RAR archive detected but not supported. Source: ${subtitle.source}",
+            "[SubtitleDownload] [FAIL] RAR archive detected but not supported. Source: ${subtitle.source}",
           );
         }
         return null;
@@ -508,13 +508,13 @@ class SubtitleSearch extends _$SubtitleSearch {
         // Raw subtitle file (typical for OpenSubtitles CDN links)
         final subFile = File("$savePath.srt");
         await subFile.writeAsBytes(bytes);
-        if (kDebugMode) print("[SubtitleDownload] ✅ Saved raw subtitle file");
+        if (kDebugMode) print("[SubtitleDownload] [OK] Saved raw subtitle file");
         return subFile.path;
       }
     } on DioException catch (e) {
       if (kDebugMode) {
         print(
-          "[SubtitleDownload] ❌ HTTP Error from ${subtitle.source}: "
+          "[SubtitleDownload] [FAIL] HTTP Error from ${subtitle.source}: "
           "Status=${e.response?.statusCode}, "
           "Message=${e.message}, "
           "URL=$url",
@@ -535,7 +535,7 @@ class SubtitleSearch extends _$SubtitleSearch {
     } catch (e, stack) {
       if (kDebugMode) {
         print(
-          "[SubtitleDownload] ❌ Unexpected error from ${subtitle.source}: $e",
+          "[SubtitleDownload] [FAIL] Unexpected error from ${subtitle.source}: $e",
         );
         print("[SubtitleDownload] Stack: $stack");
       }

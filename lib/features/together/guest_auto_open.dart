@@ -211,12 +211,29 @@ class _TogetherGuestAutoOpenState extends ConsumerState<TogetherGuestAutoOpen>
   void _evaluate() {
     if (!mounted) return;
     final service = ref.read(togetherServiceProvider);
-    // Session over: forget what was opened for it.
+    // Session over: forget what was opened for it. If an auto-opened
+    // player is still up — the room ended, or this phone was turned
+    // away with a room-full while the player was already open — do not
+    // leave the guest watching a dead room's title: pop the player
+    // back to the Together screen, where the room-full line (or the
+    // ended room) is what they see. A player this coordinator did not
+    // open is never touched.
+    //
+    // 2.12.0 exception: a session that ended keeping local playback
+    // (room expiry, empty-room auto-close) does NOT pop the player —
+    // the guest keeps watching the movie alone, under their own
+    // control. The service sets that flag before the session-end
+    // notify reaches this listener.
     if (!service.isSessionActive) {
+      final wasOpened = _openedKey != null;
+      final keepPlayback = service.keepLocalPlaybackAfterSessionEnd;
       _openedKey = null;
       _optedOutKey = null;
       _switching = false;
       _switchToken = null;
+      if (wasOpened && service.isPlayerOpen && !keepPlayback) {
+        unawaited(_popPlayerToTogether());
+      }
       return;
     }
     // A switch that landed: a player is open again, so the pop-then-push
@@ -348,6 +365,15 @@ class _TogetherGuestAutoOpenState extends ConsumerState<TogetherGuestAutoOpen>
       _finishOpen(generation);
       return;
     }
+    // Where the host is NOW, not where the title started and not
+    // where the host was when resolution began: a slow resolve must
+    // still land on the live position. The player opens at this
+    // position directly instead of starting at 0 and seeking after.
+    final startAtMs =
+        current.roomState?.targetPositionMs(
+          nowMs: DateTime.now().millisecondsSinceEpoch,
+        ) ??
+        resolution.startPositionMs;
     final router = ref.read(appRouterProvider);
     // A player is already up on a different title: pop it first so two
     // players never stack, then open the new one.
@@ -378,13 +404,33 @@ class _TogetherGuestAutoOpenState extends ConsumerState<TogetherGuestAutoOpen>
           preloadedStreams: resolution.preloadedStreams.isEmpty
               ? null
               : resolution.preloadedStreams,
+          initialPositionMs: startAtMs > 0 ? startAtMs : null,
         ),
       ).push<void>(context);
     } catch (_) {
       _finishOpen(generation, failure: kGuestTitleNotFoundMessage);
       return;
     }
-    _finishOpen(generation, openedKey: key, notice: resolution.sourceFallbackNotice);
+    _finishOpen(
+      generation,
+      openedKey: key,
+      notice: resolution.sourceFallbackNotice,
+    );
+  }
+
+  /// Pops an auto-opened player back to the Together screen when the
+  /// session itself ended (room-full rejection, leave). No message of
+  /// its own: the Together screen already shows the reason — the
+  /// room-full line, or the ended room.
+  Future<void> _popPlayerToTogether() async {
+    final service = ref.read(togetherServiceProvider);
+    final router = ref.read(appRouterProvider);
+    if (service.isPlayerOpen && playerRouteIsOnTop(router)) {
+      Navigator.of(context).pop();
+      await Future<void>.delayed(Duration.zero);
+    }
+    if (!mounted) return;
+    context.go('/together');
   }
 
   /// Closes an auto-opened player after the host left, back to the
@@ -456,7 +502,10 @@ class _TogetherGuestAutoOpenState extends ConsumerState<TogetherGuestAutoOpen>
     // `listenManual` (not `listen`): this runs from an event handler, not
     // `build`, and the subscription must be closable — `WidgetRef.listen`
     // returns void in Riverpod 3.
-    final sub = ref.listenManual(providerSearchProvider(query), (previous, next) {
+    final sub = ref.listenManual(providerSearchProvider(query), (
+      previous,
+      next,
+    ) {
       // The codebase's established read: `asData?.value` (see
       // details_controller.dart).
       final SearchAggregateState? state = next.asData?.value;

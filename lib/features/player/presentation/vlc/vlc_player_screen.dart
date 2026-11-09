@@ -75,6 +75,7 @@ class VlcPlayerScreen extends ConsumerStatefulWidget {
     required this.videoUrl,
     this.episode,
     this.preloadedStreams,
+    this.initialPositionMs,
     super.key,
   });
 
@@ -84,6 +85,13 @@ class VlcPlayerScreen extends ConsumerStatefulWidget {
   final String videoUrl;
 
   final Episode? episode;
+
+  /// Where playback starts, in milliseconds, when the opener knows
+  /// better than the stored resume point — the Together guest
+  /// auto-open, which starts at the host's current live position
+  /// instead of 0 and seeking after. Null means "use the normal
+  /// resume lookup". Clamped to >= 0; the engine clamps the top end.
+  final int? initialPositionMs;
 
   /// Sources already aggregated by a source sheet. When present, no plugin
   /// call is made.
@@ -966,7 +974,15 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
       // From here the resume point belongs to the session rather than to the
       // stored history entry: every later attempt, failover or hand-picked,
       // starts from wherever playback actually got to.
-      _resumePosition = _initialResume?.position ?? Duration.zero;
+      //
+      // A Together guest open overrides it: the host's current live
+      // position (see [initialPositionMs]) beats this phone's stored
+      // resume point — a guest who once watched this title alone must
+      // still land where the host is now, not where they stopped alone.
+      final forcedStartMs = widget.initialPositionMs;
+      _resumePosition = forcedStartMs != null
+          ? Duration(milliseconds: forcedStartMs < 0 ? 0 : forcedStartMs)
+          : (_initialResume?.position ?? Duration.zero);
       // Per session. The hint belongs to the resume point resolved just above
       // and the reconnect budget to the media about to be opened; carrying
       // either forward offers a stale position or refuses to reconnect a feed

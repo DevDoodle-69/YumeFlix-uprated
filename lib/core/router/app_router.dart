@@ -216,10 +216,17 @@ class PlayerRouteExtra {
     required this.videoUrl,
     this.episode,
     this.preloadedStreams,
+    this.initialPositionMs,
   });
   final MultimediaItem item;
   final String videoUrl;
   final Episode? episode;
+
+  /// Where the player starts, in milliseconds, when the opener knows
+  /// better than the stored resume point — the Together guest
+  /// auto-open, which starts at the host's current live position
+  /// instead of 0. Null means "use the normal resume lookup".
+  final int? initialPositionMs;
 
   /// Cross-plugin stream links aggregated before opening the player. When
   /// present, the player does not call loadStreams again for this item/episode.
@@ -276,6 +283,8 @@ class _RouteExtraEncoder extends Converter<Object?, Object?> {
           'preloadedStreams': input.preloadedStreams!
               .map((s) => s.toJson())
               .toList(),
+        if (input.initialPositionMs != null)
+          'initialPositionMs': input.initialPositionMs,
       };
     }
     if (input is ViewAllRouteExtra) {
@@ -329,6 +338,7 @@ class _RouteExtraDecoder extends Converter<Object?, Object?> {
                     )
                     .toList()
               : null,
+          initialPositionMs: (map['initialPositionMs'] as num?)?.toInt(),
         );
       case 'ViewAllRouteExtra':
         return ViewAllRouteExtra(
@@ -449,6 +459,7 @@ class PlayerRoute extends GoRouteData with $PlayerRoute {
       videoUrl: $extra.videoUrl,
       episode: $extra.episode,
       preloadedStreams: $extra.preloadedStreams,
+      initialPositionMs: $extra.initialPositionMs,
     );
   }
 }

@@ -657,7 +657,7 @@ class _TmdbMovieDetailsScreenState
 
                 const SizedBox(height: LayoutConstants.spacingMd),
 
-                // Metadata panel: [TMDB] MOVIE/TV  2026  ★ 8.4  1H 56M  [PG-13]
+                // Metadata panel: [TMDB] MOVIE/TV  2026  8.4  1H 56M  [PG-13]
                 GlassCard(
                   padding: const EdgeInsets.all(16),
                   child: Column(

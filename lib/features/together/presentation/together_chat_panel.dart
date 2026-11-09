@@ -8,13 +8,16 @@ import 'package:intl/intl.dart';
 import '../chat_image_chunks.dart';
 import '../models.dart';
 import '../together_service.dart';
+import 'host_crown_icon.dart';
 
 /// Glassmorphism chat over the video: the film stays visible but blurred
 /// behind the panel, so a message never means missing the scene.
 ///
-/// Text, a quick-emoji row (system keyboard emoji via the normal keyboard —
-/// no heavy emoji package), reply-by-long-press with a quote above the
-/// composer, and photos via file_picker, up to 5 MB (2.8.0 — was ~120 KB).
+/// Text, reply-by-long-press with a quote above the composer, and photos
+/// via file_picker, up to 5 MB (2.8.0 — was ~120 KB). There is no emoji
+/// picker in the app UI (2.12.0): a user who wants an emoji in a message
+/// types it on their own system keyboard — message text is user content,
+/// not app UI — and the app itself renders none.
 /// Photos travel chunked over the relay (32 KiB pieces, SHA-256 checked on
 /// reassembly), so a big photo never stalls the room as one giant packet;
 /// sending / receiving progress shows as a slim row above the composer
@@ -40,15 +43,6 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
   final ScrollController _scroll = ScrollController();
   TogetherChatMessage? _replyTo;
   bool _sendingImage = false;
-
-  static const List<String> _quickEmoji = <String>[
-    '😂',
-    '❤️',
-    '🔥',
-    '😮',
-    '👏',
-    '😢',
-  ];
 
   @override
   void initState() {
@@ -156,65 +150,63 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
           padding: const EdgeInsets.only(right: 12, top: 12, bottom: 12),
           child: SizedBox(
             width: panelWidth,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(20),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: colorScheme.surface.withValues(alpha: 0.72),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.14),
-                  ),
-                ),
-                child: Column(
-                  children: [
-                    _header(context),
-                    const Divider(height: 1),
-                    Expanded(
-                      child: messages.isEmpty
-                          ? Center(
-                              child: Text(
-                                'Say hi to start the watch party 👋',
-                                style: TextStyle(
-                                  color: colorScheme.onSurfaceVariant,
-                                ),
-                              ),
-                            )
-                          : ListView.builder(
-                              controller: _scroll,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 10,
-                              ),
-                              itemCount: messages.length,
-                              itemBuilder: (context, index) {
-                                final message = messages[index];
-                                final mine =
-                                    message.senderId == service.clientId;
-                                return _MessageBubble(
-                                  message: message,
-                                  mine: mine,
-                                  onReply: () => setState(
-                                    () => _replyTo = message,
-                                  ),
-                                );
-                              },
-                            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: colorScheme.surface.withValues(alpha: 0.72),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.14),
                     ),
-                    _quickEmojiRow(),
-                    if (_replyTo != null) _replyQuote(),
-                    if (transfers.isNotEmpty) _transferRows(transfers),
-                    _composerRow(context),
-                  ],
+                  ),
+                  child: Column(
+                    children: [
+                      _header(context),
+                      const Divider(height: 1),
+                      Expanded(
+                        child: messages.isEmpty
+                            ? Center(
+                                child: Text(
+                                  'Say hi to start the watch party',
+                                  style: TextStyle(
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              )
+                            : ListView.builder(
+                                controller: _scroll,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 10,
+                                ),
+                                itemCount: messages.length,
+                                itemBuilder: (context, index) {
+                                  final message = messages[index];
+                                  final mine =
+                                      message.senderId == service.clientId;
+                                  return _MessageBubble(
+                                    message: message,
+                                    mine: mine,
+                                    onReply: () =>
+                                        setState(() => _replyTo = message),
+                                  );
+                                },
+                              ),
+                      ),
+                      if (_replyTo != null) _replyQuote(),
+                      if (transfers.isNotEmpty) _transferRows(transfers),
+                      _composerRow(context),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
         ),
       ),
-    ),
     );
   }
 
@@ -229,9 +221,8 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
           Expanded(
             child: Text(
               'Together chat',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
             ),
           ),
           if (widget.service.otp != null)
@@ -260,33 +251,6 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
     );
   }
 
-  Widget _quickEmojiRow() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      child: Row(
-        children: [
-          for (final emoji in _quickEmoji)
-            Padding(
-              padding: const EdgeInsets.only(right: 4),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(16),
-                onTap: () {
-                  _composer.text += emoji;
-                  _composer.selection = TextSelection.fromPosition(
-                    TextPosition(offset: _composer.text.length),
-                  );
-                },
-                child: Padding(
-                  padding: const EdgeInsets.all(4),
-                  child: Text(emoji, style: const TextStyle(fontSize: 20)),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
   Widget _replyQuote() {
     final reply = _replyTo!;
     final colorScheme = Theme.of(context).colorScheme;
@@ -297,16 +261,14 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
       decoration: BoxDecoration(
         color: colorScheme.primary.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(10),
-        border: Border(
-          left: BorderSide(color: colorScheme.primary, width: 3),
-        ),
+        border: Border(left: BorderSide(color: colorScheme.primary, width: 3)),
       ),
       child: Row(
         children: [
           Expanded(
             child: Text(
               // Replying to a name, not a "Friend": the quoted message's
-              // sender is who typed it (or HOST 👑 for the host).
+              // sender is who typed it (or HOST for the host).
               'Replying to ${togetherChatSenderDisplayName(reply, mine: reply.senderId == widget.service.clientId)}: ${reply.quoteText}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -490,21 +452,29 @@ class _MessageBubble extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   // 2.11.0: every bubble names its sender — `You` for own
-                  // messages, `HOST 👑` for the room creator, the typed
-                  // name for a guest — so everyone knows who said what.
-                  // Crown + label, never colour alone.
-                  Flexible(
-                    child: Text(
-                      togetherChatSenderDisplayName(message, mine: mine),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: textColor.withValues(alpha: 0.8),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
+                  // messages, `HOST` + crown icon for the room creator,
+                  // the typed name for a guest — so everyone knows who
+                  // said what. Crown icon + label, never colour alone.
+                  if (!mine && message.senderRole == 'host')
+                    HostIdentityLabel(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      iconSize: 11,
+                      color: textColor.withValues(alpha: 0.8),
+                    )
+                  else
+                    Flexible(
+                      child: Text(
+                        togetherChatSenderDisplayName(message, mine: mine),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: textColor.withValues(alpha: 0.8),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     ),
-                  ),
                   const SizedBox(width: 6),
                   Text(
                     time,
@@ -522,9 +492,8 @@ class _MessageBubble extends StatelessWidget {
                   child: Image.memory(
                     base64Decode(message.imageBase64!),
                     fit: BoxFit.cover,
-                    errorBuilder: (context, _, _) => const Text(
-                      'Photo could not be shown',
-                    ),
+                    errorBuilder: (context, _, _) =>
+                        const Text('Photo could not be shown'),
                   ),
                 )
               else

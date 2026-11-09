@@ -15,6 +15,22 @@ const int kTogetherMaxGuests = 5;
 /// at the service boundary, so a long name can never reach the relay.
 const int kTogetherGuestNameMaxLength = 20;
 
+/// How long a Together room lives, from the moment the host creates
+/// it (2.12.0): 45 minutes. After that the room ends for everyone in
+/// it, and no one can join it any more — see
+/// [kTogetherRoomExpiredMessage] and [kTogetherRoomEndedMessage].
+const Duration kTogetherRoomLifetime = Duration(minutes: 45);
+
+/// Short honest line for a join attempt after the room expired: the
+/// room is gone, and only a new room from the host brings it back.
+const String kTogetherRoomExpiredMessage =
+    'This room has expired — ask the host to create a new room.';
+
+/// Short honest line when a room ends because its 45 minutes ran out.
+/// Local playback is untouched — anyone watching keeps watching alone.
+const String kTogetherRoomEndedMessage =
+    'Room ended — the 45 minute limit was reached.';
+
 /// Short honest line for a joiner turned away by the guest cap.
 const String kTogetherRoomFullMessage =
     'This room is full — the host already has 5 guests.';
@@ -40,7 +56,8 @@ String? validateTogetherGuestName(String value) {
 
 /// One phone in a Together room, as the room knows it.
 ///
-/// The host is always `HOST 👑` — they never type a name. A guest is their
+/// The host is always `HOST` with a crown icon — they never type a name.
+/// A guest is their
 /// typed name ([displayName]), never a device name or `Guest 1`.
 class TogetherMember {
   const TogetherMember({
@@ -62,10 +79,12 @@ class TogetherMember {
   /// True for the room creator.
   bool get isHost => role == 'host';
 
-  /// What the member list and presence show: `HOST 👑` for the host, the
-  /// typed name for a guest, `Guest` when no name is known.
+  /// What the member list and presence show: `HOST` for the host (the
+  /// crown is rendered as an icon widget next to the label, never as a
+  /// character in the string), the typed name for a guest, `Guest` when
+  /// no name is known.
   String get displayLabel {
-    if (isHost) return 'HOST 👑';
+    if (isHost) return 'HOST';
     final name = displayName?.trim();
     if (name != null && name.isNotEmpty) return name;
     return 'Guest';
@@ -295,6 +314,7 @@ class TogetherRoomState {
     required this.sequence,
     required this.hostId,
     this.playbackSpeed = 1.0,
+    this.createdAtMs = 0,
   });
 
   final TogetherMediaIdentity media;
@@ -317,6 +337,12 @@ class TogetherRoomState {
 
   /// The MQTT client id of the host that published this state.
   final String hostId;
+
+  /// Wall-clock milliseconds when the host created the room (2.12.0):
+  /// the room's 45-minute lifetime ([kTogetherRoomLifetime]) runs from
+  /// here, and a joiner checks expiry against this host-stamped time —
+  /// never against their own clock alone. 0 when the host predates it.
+  final int createdAtMs;
 
   /// The host's engine speed when the state was stamped (1.0 normally).
   /// Part of the clock, not a decoration: the target advances at this
@@ -342,6 +368,7 @@ class TogetherRoomState {
     'sequence': sequence,
     'hostId': hostId,
     'playbackSpeed': playbackSpeed,
+    if (createdAtMs > 0) 'createdAtMs': createdAtMs,
   };
 
   factory TogetherRoomState.fromJson(Map<String, dynamic> json) =>
@@ -356,6 +383,7 @@ class TogetherRoomState {
         sequence: (json['sequence'] as num?)?.toInt() ?? 0,
         hostId: (json['hostId'] as String?) ?? '',
         playbackSpeed: (json['playbackSpeed'] as num?)?.toDouble() ?? 1.0,
+        createdAtMs: (json['createdAtMs'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -408,7 +436,8 @@ class TogetherChatMessage {
   final int timestampMs;
 
   /// The sender's typed guest name, when the sender is a guest (2.11.0).
-  /// Null for the host (who is `HOST 👑`) and for messages from clients
+  /// Null for the host (who is `HOST` with a crown icon) and for messages
+  /// from clients
   /// that predate names.
   final String? senderName;
 
@@ -455,7 +484,7 @@ class TogetherChatMessage {
 }
 
 /// What a chat bubble shows above the text: `You` for own messages,
-/// `HOST 👑` (crown + label, never colour alone) for the room creator,
+/// `HOST` (crown icon + label, never colour alone) for the room creator,
 /// the typed name for a guest, and the old `Friend` label for messages
 /// from clients that predate names.
 String togetherChatSenderDisplayName(
@@ -463,7 +492,7 @@ String togetherChatSenderDisplayName(
   required bool mine,
 }) {
   if (mine) return 'You';
-  if (message.senderRole == 'host') return 'HOST 👑';
+  if (message.senderRole == 'host') return 'HOST';
   final name = message.senderName?.trim();
   if (name != null && name.isNotEmpty) return name;
   return message.senderLabel;
@@ -532,6 +561,7 @@ class TogetherRoomStatusMessage {
     this.media,
     required this.senderId,
     required this.timestampMs,
+    this.createdAtMs = 0,
   });
 
   final TogetherRoomStatus status;
@@ -545,12 +575,19 @@ class TogetherRoomStatusMessage {
   /// Wall-clock milliseconds when the status was published.
   final int timestampMs;
 
+  /// Wall-clock milliseconds when the host created the room (2.12.0):
+  /// the status push is how a guest joining a not-yet-live room learns
+  /// the room's age at once, instead of waiting for the first heartbeat.
+  /// 0 when the host predates it.
+  final int createdAtMs;
+
   Map<String, dynamic> toJson() => <String, dynamic>{
     'kind': 'status',
     'status': status.wireValue,
     if (media != null) 'media': media!.toJson(),
     'senderId': senderId,
     'timestampMs': timestampMs,
+    if (createdAtMs > 0) 'createdAtMs': createdAtMs,
   };
 
   factory TogetherRoomStatusMessage.fromJson(Map<String, dynamic> json) {
@@ -567,6 +604,7 @@ class TogetherRoomStatusMessage {
           : null,
       senderId: (json['senderId'] as String?) ?? '',
       timestampMs: (json['timestampMs'] as num?)?.toInt() ?? 0,
+      createdAtMs: (json['createdAtMs'] as num?)?.toInt() ?? 0,
     );
   }
 }
@@ -599,7 +637,7 @@ class TogetherPresenceEvent {
   final int timestampMs;
 
   /// The guest's typed name, when the sender is a guest (2.11.0). Null
-  /// for the host, who is `HOST 👑` without typing a name.
+  /// for the host, who is `HOST` with a crown icon without typing a name.
   final String? displayName;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -674,6 +712,7 @@ class TogetherLastRoom {
     this.media,
     this.positionMs = 0,
     this.savedAtMs = 0,
+    this.createdAtMs = 0,
   });
 
   /// The 6-digit room code.
@@ -690,12 +729,19 @@ class TogetherLastRoom {
   /// Wall-clock milliseconds when this snapshot was saved.
   final int savedAtMs;
 
+  /// Wall-clock milliseconds when the room was created (2.12.0): a
+  /// host rejoin restores the original lifetime instead of starting a
+  /// fresh 45 minutes, and a guest rejoin can refuse an expired room
+  /// before connecting. 0 when unknown (rooms predating it).
+  final int createdAtMs;
+
   Map<String, dynamic> toJson() => <String, dynamic>{
     'otp': otp,
     'role': role,
     if (media != null) 'media': media!.toJson(),
     'positionMs': positionMs,
     'savedAtMs': savedAtMs,
+    if (createdAtMs > 0) 'createdAtMs': createdAtMs,
   };
 
   factory TogetherLastRoom.fromJson(Map<String, dynamic> json) =>
@@ -709,5 +755,6 @@ class TogetherLastRoom {
             : null,
         positionMs: (json['positionMs'] as num?)?.toInt() ?? 0,
         savedAtMs: (json['savedAtMs'] as num?)?.toInt() ?? 0,
+        createdAtMs: (json['createdAtMs'] as num?)?.toInt() ?? 0,
       );
 }

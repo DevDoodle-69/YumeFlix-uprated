@@ -17,6 +17,7 @@ import 'package:yumeflix/core/utils/layout_constants.dart';
 
 import '../../../../core/extensions/extension_manager.dart';
 import '../../../details/presentation/playback_launcher.dart';
+import '../../../together/presentation/together_history_section.dart';
 import '../../../../shared/widgets/cards_wrapper.dart';
 import '../../../../shared/widgets/loading_dialog.dart';
 
@@ -265,6 +266,23 @@ class _ContinueWatchingCardState extends ConsumerState<ContinueWatchingCard> {
                 Text(item.title, style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 8),
                 ListTile(
+                  leading: const Icon(Icons.group_rounded),
+                  title: const Text('Watch together'),
+                  subtitle: const Text(
+                    'Share this title in your Together room, from where you left off.',
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    unawaited(
+                      openHistoryItemForTogether(
+                        context: context,
+                        ref: ref,
+                        item: widget.historyItem,
+                      ),
+                    );
+                  },
+                ),
+                ListTile(
                   leading: const Icon(Icons.info_outline),
                   title: Text(AppLocalizations.of(context)!.viewDetails),
                   onTap: () {
@@ -416,7 +434,9 @@ class _ContinueWatchingCardState extends ConsumerState<ContinueWatchingCard> {
                                 vertical: 2,
                               ),
                               decoration: BoxDecoration(
-                                color: YumeDesign.accent.withValues(alpha: 0.20),
+                                color: YumeDesign.accent.withValues(
+                                  alpha: 0.20,
+                                ),
                                 borderRadius: BorderRadius.circular(
                                   LayoutConstants.radiusSm,
                                 ),

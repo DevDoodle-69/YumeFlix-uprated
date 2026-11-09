@@ -7,13 +7,33 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/providers/device_info_provider.dart';
+import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/design_tokens.dart';
 import '../together_provider.dart';
 import '../together_service.dart';
 import 'together_member_list.dart';
 import 'together_start_button.dart';
 
-/// The floating "Enjoy Together" orb: the room, always within reach.
+/// 2.12.0 ROOT-CAUSE FIX (giant yellow-underlined overlay). This widget
+/// is mounted ONCE above the router (`main.dart`), OUTSIDE every
+/// `Scaffold`/`Material` in the app, so its ambient `DefaultTextStyle` is
+/// the SDK's `_errorTextStyle` (Flutter 3.47.9,
+/// `packages/flutter/lib/src/material/app.dart:45`): red `0xD0FF0000`,
+/// monospace, 48 pt, w900, double yellow underline. A `Text` that set
+/// only a colour merged over it and inherited the 48 pt yellow-underlined
+/// style — the screenshot. The fix is inside this widget, at the root:
+/// the whole orb (pill AND card) sits under an explicit `Material`
+/// (transparency) + a full `DefaultTextStyle` (Outfit 14 pt, themed
+/// colour, `TextDecoration.none` — NOT a merge, so nothing of the error
+/// style survives: not the size, not the underline, not the monospace)
+/// + a 1.3x text-scale clamp, and every line in the card also carries
+/// its own explicit bounded style. Tests that pumped the orb inside a
+/// `Scaffold` never saw this — the `Material` ancestor hid the error
+/// style — so the 2.12.0 tests pump it the way `main.dart` mounts it.
+///
+/// HOST ONLY (2.12.0). The orb is a host-side control: a guest never
+/// sees any pill, in any phase — the guest's waiting state lives only
+/// in the Together screen's guest waiting card.
 ///
 /// Mounted ONCE, above the router (see `main.dart`), so it is visible the
 /// whole time a room is active — while the host searches, browses, opens
@@ -165,7 +185,9 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
   void _copyOtp(String otp) {
     Clipboard.setData(ClipboardData(text: otp));
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Room code copied — send it to your friend')),
+      const SnackBar(
+        content: Text('Room code copied — send it to your friend'),
+      ),
     );
   }
 
@@ -204,15 +226,17 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
     double pillWidth,
     double pillHeight,
   ) {
-    final bounds = _orbBounds(size, padding, orientation, pillWidth, pillHeight);
+    final bounds = _orbBounds(
+      size,
+      padding,
+      orientation,
+      pillWidth,
+      pillHeight,
+    );
     return Offset(
-      (fraction.dx * size.width)
-          .clamp(bounds.left, bounds.right)
-          .toDouble() /
+      (fraction.dx * size.width).clamp(bounds.left, bounds.right).toDouble() /
           size.width,
-      (fraction.dy * size.height)
-          .clamp(bounds.top, bounds.bottom)
-          .toDouble() /
+      (fraction.dy * size.height).clamp(bounds.top, bounds.bottom).toDouble() /
           size.height,
     );
   }
@@ -220,9 +244,16 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
   @override
   Widget build(BuildContext context) {
     final service = ref.watch(togetherServiceProvider);
-    final isTv =
-        ref.watch(deviceProfileProvider).asData?.value.isTv ?? false;
+    final isTv = ref.watch(deviceProfileProvider).asData?.value.isTv ?? false;
     if (!service.isSessionActive || isTv) return const SizedBox.shrink();
+    // 2.12.0: HOST ONLY. The orb is a host-side control — a guest must
+    // never see any floating pill, in any phase (waiting, live, paused,
+    // ended). The guest's waiting state lives only in the Together
+    // screen's guest waiting card, and the guest's live playback is
+    // driven by the auto-open coordinator, never by this orb. Gating
+    // here, at the one mount, covers every code path: there is no other
+    // mount (see `main.dart`, the only call site).
+    if (service.role != TogetherRole.host) return const SizedBox.shrink();
     // 2.10.0, Bug 1: while the room is live AND the shared title is
     // actually playing in an open player, the orb hides entirely — the
     // Live status lives only in the player control panel, which unmounts
@@ -283,8 +314,7 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
         _collapseScheduled = false;
         if (!mounted) return;
         final current = ref.read(togetherServiceProvider);
-        if (_expanded &&
-            current.startState == TogetherStartState.ready) {
+        if (_expanded && current.startState == TogetherStartState.ready) {
           setState(() => _expanded = false);
         }
       });
@@ -293,57 +323,77 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
     return Positioned(
       left: left.clamp(bounds.left, bounds.right).toDouble(),
       top: top.clamp(bounds.top, bounds.bottom).toDouble(),
-      child: GestureDetector(
-        onPanStart: (_) => _dragMoved = false,
-        onPanUpdate: (details) {
-          if (details.delta.distance > 2) _dragMoved = true;
-          // Drag from where the pill actually is: with no saved position
-          // yet that is the orientation's default, not the other
-          // orientation's.
-          final base = _hasPosition
-              ? _fraction
-              : orientation == Orientation.landscape
-              ? _kDefaultFractionLandscape
-              : _kDefaultFractionPortrait;
-          setState(() {
-            _hasPosition = true;
-            _fraction = _clampFraction(
-              Offset(
-                base.dx + details.delta.dx / size.width,
-                base.dy + details.delta.dy / size.height,
-              ),
-              size,
-              padding,
-              orientation,
-              width,
-              height,
-            );
-          });
-        },
-        onPanEnd: (_) {
-          ref.read(togetherServiceProvider).setOrbPosition(_fraction);
-        },
-        onTapDown: (_) => setState(() => _pressed = true),
-        onTapUp: (_) => setState(() => _pressed = false),
-        onTapCancel: () => setState(() => _pressed = false),
-        // While ready the pill IS the Start button (a real InkWell
-        // inside [TogetherStartButton]) and the sole tap handler: a null
-        // onTap here means no competing recogniser, so one tap fires
-        // Start exactly once. Otherwise a tap toggles the card.
-        onTap: isReady
-            ? null
-            : () {
-                if (_dragMoved) return;
-                setState(() => _expanded = !_expanded);
+      // 2.12.0 root fix (see the class doc): this subtree has no
+      // Material ancestor at its mount point, so it brings its own —
+      // an explicit Material + a FULL DefaultTextStyle (not a merge: a
+      // merge would keep the ambient error style's monospace and w900
+      // for every field left unset) + a 1.3x text-scale clamp.
+      child: Material(
+        type: MaterialType.transparency,
+        child: DefaultTextStyle(
+          style: const TextStyle(
+            fontFamily: AppTheme.fontFamily,
+            fontSize: YumeDesign.bodySize,
+            fontWeight: FontWeight.w400,
+            color: YumeDesign.textPrimary,
+            decoration: TextDecoration.none,
+          ),
+          child: MediaQuery.withClampedTextScaling(
+            maxScaleFactor: 1.3,
+            child: GestureDetector(
+              onPanStart: (_) => _dragMoved = false,
+              onPanUpdate: (details) {
+                if (details.delta.distance > 2) _dragMoved = true;
+                // Drag from where the pill actually is: with no saved position
+                // yet that is the orientation's default, not the other
+                // orientation's.
+                final base = _hasPosition
+                    ? _fraction
+                    : orientation == Orientation.landscape
+                    ? _kDefaultFractionLandscape
+                    : _kDefaultFractionPortrait;
+                setState(() {
+                  _hasPosition = true;
+                  _fraction = _clampFraction(
+                    Offset(
+                      base.dx + details.delta.dx / size.width,
+                      base.dy + details.delta.dy / size.height,
+                    ),
+                    size,
+                    padding,
+                    orientation,
+                    width,
+                    height,
+                  );
+                });
               },
-        // 2.7.0: no breathing pulse, no halo — a subtle press scale only,
-        // over a plain black drop shadow from the glass itself.
-        child: AnimatedScale(
-          scale: _pressed ? 0.97 : 1.0,
-          duration: const Duration(milliseconds: 120),
-          child: _expanded
-              ? _expandedCard(context, service)
-              : _collapsedPill(context, service),
+              onPanEnd: (_) {
+                ref.read(togetherServiceProvider).setOrbPosition(_fraction);
+              },
+              onTapDown: (_) => setState(() => _pressed = true),
+              onTapUp: (_) => setState(() => _pressed = false),
+              onTapCancel: () => setState(() => _pressed = false),
+              // While ready the pill IS the Start button (a real InkWell
+              // inside [TogetherStartButton]) and the sole tap handler: a null
+              // onTap here means no competing recogniser, so one tap fires
+              // Start exactly once. Otherwise a tap toggles the card.
+              onTap: isReady
+                  ? null
+                  : () {
+                      if (_dragMoved) return;
+                      setState(() => _expanded = !_expanded);
+                    },
+              // 2.7.0: no breathing pulse, no halo — a subtle press scale only,
+              // over a plain black drop shadow from the glass itself.
+              child: AnimatedScale(
+                scale: _pressed ? 0.97 : 1.0,
+                duration: const Duration(milliseconds: 120),
+                child: _expanded
+                    ? _expandedCard(context, service)
+                    : _collapsedPill(context, service),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -407,12 +457,10 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
         break;
     }
     final colorScheme = Theme.of(context).colorScheme;
-    final isGuestWaiting = service.phase == TogetherPhase.waitingGuest;
-    final label = service.reconnecting
-        ? 'Reconnecting…'
-        : isGuestWaiting
-        ? 'Waiting for host…'
-        : 'Enjoy Together';
+    // Host only (2.12.0): this widget returns nothing for a guest, so
+    // there is no guest-waiting label or waiting dots here any more —
+    // the guest's waiting state lives only in the Together screen.
+    final label = service.reconnecting ? 'Reconnecting…' : 'Enjoy Together';
     return _glass(
       context,
       SizedBox(
@@ -422,11 +470,7 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
-                Icons.group_rounded,
-                size: 22,
-                color: colorScheme.onSurface,
-              ),
+              Icon(Icons.group_rounded, size: 22, color: colorScheme.onSurface),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -441,10 +485,6 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
                   ),
                 ),
               ),
-              if (isGuestWaiting) ...[
-                const SizedBox(width: 6),
-                const _WaitingDots(),
-              ],
               if (service.chatHasUnread)
                 Container(
                   width: 10,
@@ -463,22 +503,36 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
     );
   }
 
+  /// 2.12.0 redesign — a professional panel, not a debug overlay.
+  ///
+  /// Hierarchy: header (icon + title + collapse) → host status line +
+  /// picked title → room-code section (label + full code chip + Copy) →
+  /// members → connection/presence → primary action → chat → Leave.
+  /// Every line has an explicit small themed style (`fontSize`, colour,
+  /// `TextDecoration.none`, `maxLines` + ellipsis) on top of the
+  /// ambient `DefaultTextStyle` the orb now provides, so no line can
+  /// ever inherit the SDK error style again. The status line is the
+  /// HOST's own line — never `roomStatus.label`: that string is the
+  /// guest's waiting copy ("Host is still finding a movie…") and must
+  /// never render on the host's phone. The room code never clips: the
+  /// chip's text is wrapped in a scale-down `FittedBox`, so the full
+  /// 6-digit code + Copy always fit at 1.0x and 1.3x. All actions are
+  /// ≥ 44 dp tall. No Start button lives here (2.9.0): the collapsed
+  /// pill is the single Start control.
   Widget _expandedCard(BuildContext context, TogetherService service) {
-    final colorScheme = Theme.of(context).colorScheme;
     final media = service.currentMedia;
     final otp = service.otp ?? '';
-    final isHost = service.role == TogetherRole.host;
-    final isPendingHost =
-        isHost && service.phase == TogetherPhase.pendingHost;
-    // No Start button lives in this card any more (2.9.0): the collapsed
-    // pill is the single Start control, and the card collapses itself
-    // when the room becomes ready. A host who expanded the card while
-    // browsing sees a neutral hint instead — never a second Start.
+    final isPendingHost = service.phase == TogetherPhase.pendingHost;
     final isReady = service.startState == TogetherStartState.ready;
     // Chat action: the player registers it on the service while it is
     // open; the widget's own callback overrides (tests, direct mounts).
     final onOpenChat = widget.onOpenChat ?? service.orbOpenChatAction;
     final mediaQuery = MediaQuery.of(context);
+    const cardText = TextStyle(
+      fontSize: 13,
+      color: YumeDesign.textSecondary,
+      decoration: TextDecoration.none,
+    );
     return _glass(
       context,
       SizedBox(
@@ -494,21 +548,39 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
           ),
           child: SingleChildScrollView(
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(YumeDesign.space8),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
-                      const Icon(Icons.group_rounded, size: 20),
-                      const SizedBox(width: 8),
+                      Container(
+                        width: 32,
+                        height: 32,
+                        decoration: BoxDecoration(
+                          color: YumeDesign.accent.withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(
+                            YumeDesign.radiusControl,
+                          ),
+                        ),
+                        child: const Icon(
+                          Icons.group_rounded,
+                          size: 18,
+                          color: YumeDesign.accentLight,
+                        ),
+                      ),
+                      const SizedBox(width: YumeDesign.space4),
                       const Expanded(
                         child: Text(
                           'Enjoy Together',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w700,
+                            color: YumeDesign.textPrimary,
+                            decoration: TextDecoration.none,
                           ),
                         ),
                       ),
@@ -521,92 +593,188 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
                           child: Icon(
                             Icons.keyboard_arrow_down_rounded,
                             size: 20,
+                            color: YumeDesign.textSecondary,
                           ),
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  // Live status: a real MQTT fact, never a local guess.
+                  const SizedBox(height: YumeDesign.space6),
+                  Container(height: 1, color: YumeDesign.hairline),
+                  const SizedBox(height: YumeDesign.space6),
+                  // 2.12.0 room lifetime: small, honest, neutral — a
+                  // clock chip, never red or orange, never large. Read
+                  // straight off the service ([TogetherService.remainingTime],
+                  // driven by its 1 s heartbeat tick — this widget runs
+                  // no timer of its own) and shown only while the room's
+                  // creation time is known ([TogetherService.roomEndsAtMs]
+                  // is null for a room predating the lifetime, and for
+                  // no room at all). At expiry the service ends the room,
+                  // `isSessionActive` goes false and this whole panel
+                  // unmounts — it never lingers with stale content.
+                  if (service.roomEndsAtMs != null) ...[
+                    TogetherRoomRemainingIndicator(
+                      remaining: service.remainingTime,
+                    ),
+                    const SizedBox(height: YumeDesign.space6),
+                  ],
+                  // The host's own status line — never the guest's
+                  // waiting copy. Reconnecting is the one honest
+                  // exception: the relay really is down.
                   Text(
                     service.reconnecting
                         ? 'Reconnecting to the Together relay…'
-                        : service.roomStatus.label,
-                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                        : media != null
+                        ? 'Title picked — play it, then tap Start on the pill.'
+                        : 'Pick a title to get started',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: cardText,
                   ),
                   if (media != null) ...[
-                    const SizedBox(height: 6),
+                    const SizedBox(height: YumeDesign.space2),
                     Text(
                       media.title,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w700),
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: YumeDesign.textPrimary,
+                        decoration: TextDecoration.none,
+                      ),
                     ),
                   ],
-                  const SizedBox(height: 4),
-                  Text(
-                    service.presenceLabel,
+                  const SizedBox(height: YumeDesign.space8),
+                  const Text(
+                    'ROOM CODE',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      color: colorScheme.onSurfaceVariant,
-                      fontSize: 12,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 1.2,
+                      color: YumeDesign.textSecondary,
+                      decoration: TextDecoration.none,
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  // 2.11.0: who is in the room, by name — HOST 👑 first,
-                  // then each guest's typed name.
-                  TogetherMemberList(
-                    members: service.members,
-                    ownClientId: service.clientId,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    // Relay + measured latency, straight off the service.
-                    service.connectionStatusLabel,
-                    style: TextStyle(
-                      color: colorScheme.onSurfaceVariant,
-                      fontSize: 12,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: YumeDesign.space2),
                   Row(
                     children: [
-                      // The code chip flexes: on a narrow card (or a wide test
-                      // font) the chip ellipsises instead of pushing the Copy
-                      // button out of the card.
-                      Flexible(
+                      Expanded(
                         child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 6,
-                          ),
+                          height: 44,
+                          alignment: Alignment.centerLeft,
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
                           decoration: BoxDecoration(
-                            color: colorScheme.primary.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(10),
+                            color: YumeDesign.accent.withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(
+                              YumeDesign.radiusControl,
+                            ),
+                            border: Border.all(color: YumeDesign.hairline),
                           ),
-                          child: Text(
-                            'Room $otp',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: colorScheme.primary,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: 2,
+                          // Scale-down, never clip: the full code always
+                          // fits, at 1.0x and at 1.3x text scale.
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              'Room $otp',
+                              maxLines: 1,
+                              style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 2,
+                                color: YumeDesign.accentLight,
+                                decoration: TextDecoration.none,
+                              ),
                             ),
                           ),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      OutlinedButton.icon(
-                        onPressed: () => _copyOtp(otp),
-                        icon: const Icon(Icons.copy_rounded, size: 16),
-                        label: const Text('Copy'),
+                      const SizedBox(width: YumeDesign.space4),
+                      SizedBox(
+                        height: 44,
+                        child: OutlinedButton.icon(
+                          onPressed: () => _copyOtp(otp),
+                          icon: const Icon(Icons.copy_rounded, size: 16),
+                          label: const Text(
+                            'Copy',
+                            style: TextStyle(
+                              fontSize: 13,
+                              decoration: TextDecoration.none,
+                            ),
+                          ),
+                        ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: YumeDesign.space8),
+                  const Text(
+                    'IN THIS ROOM',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 1.2,
+                      color: YumeDesign.textSecondary,
+                      decoration: TextDecoration.none,
+                    ),
+                  ),
+                  const SizedBox(height: YumeDesign.space2),
+                  // 2.11.0: who is in the room, by name — HOST (crown icon)
+                  // first, then each guest's typed name.
+                  TogetherMemberList(
+                    members: service.members,
+                    ownClientId: service.clientId,
+                  ),
+                  const SizedBox(height: YumeDesign.space6),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.only(top: 2),
+                        child: Icon(
+                          Icons.sync_rounded,
+                          size: 14,
+                          color: YumeDesign.textSecondary,
+                        ),
+                      ),
+                      const SizedBox(width: YumeDesign.space2),
+                      Expanded(
+                        child: Text(
+                          // Relay + measured latency, straight off the
+                          // service.
+                          service.connectionStatusLabel,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: YumeDesign.textSecondary,
+                            decoration: TextDecoration.none,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: YumeDesign.space2),
+                  Text(
+                    service.presenceLabel,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: YumeDesign.textSecondary,
+                      decoration: TextDecoration.none,
+                    ),
+                  ),
+                  const SizedBox(height: YumeDesign.space8),
                   if (isReady)
                     const Text(
                       'Playing — tap Start on the floating pill to go live.',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 12,
                         color: YumeDesign.textSecondary,
@@ -617,6 +785,8 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
                     const Text(
                       'Play the movie first — the Start button appears once '
                       'it’s playing.',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 12,
                         color: YumeDesign.textSecondary,
@@ -626,43 +796,63 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
                   else if (isPendingHost)
                     SizedBox(
                       width: double.infinity,
+                      height: 48,
                       child: FilledButton.icon(
                         onPressed: () {
                           setState(() => _expanded = false);
                           context.go('/search');
                         },
-                        icon: const Icon(Icons.search_rounded),
-                        label: const Text('Pick a title to watch'),
+                        icon: const Icon(Icons.search_rounded, size: 18),
+                        label: const Text(
+                          'Pick a title to watch',
+                          style: TextStyle(
+                            fontSize: 14,
+                            decoration: TextDecoration.none,
+                          ),
+                        ),
                       ),
-                    )
-                  else if (service.phase == TogetherPhase.waitingGuest)
-                    const Text(
-                      'Playback starts automatically when the host presses Start.',
-                      style: TextStyle(fontSize: 12),
                     ),
                   if (onOpenChat != null) ...[
-                    const SizedBox(height: 8),
+                    const SizedBox(height: YumeDesign.space4),
                     SizedBox(
                       width: double.infinity,
+                      height: 44,
                       child: OutlinedButton.icon(
                         onPressed: () {
                           setState(() => _expanded = false);
                           onOpenChat.call();
                         },
-                        icon: const Icon(Icons.chat_bubble_outline_rounded),
-                        label: const Text('Open chat'),
+                        icon: const Icon(
+                          Icons.chat_bubble_outline_rounded,
+                          size: 18,
+                        ),
+                        label: const Text(
+                          'Open chat',
+                          style: TextStyle(
+                            fontSize: 14,
+                            decoration: TextDecoration.none,
+                          ),
+                        ),
                       ),
                     ),
                   ],
-                  const SizedBox(height: 4),
-                  Align(
-                    alignment: Alignment.centerRight,
+                  const SizedBox(height: YumeDesign.space4),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 44,
                     child: TextButton(
                       onPressed: () {
                         setState(() => _expanded = false);
                         ref.read(togetherServiceProvider).leaveRoom();
                       },
-                      child: const Text('Leave room'),
+                      child: const Text(
+                        'Leave room',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: YumeDesign.textSecondary,
+                          decoration: TextDecoration.none,
+                        ),
+                      ),
                     ),
                   ),
                 ],
@@ -676,62 +866,66 @@ class _FloatingTogetherOrbState extends ConsumerState<FloatingTogetherOrb> {
   }
 }
 
-/// Three pulsing dots: the guest-waiting "still alive" signal on the pill.
-class _WaitingDots extends StatefulWidget {
-  const _WaitingDots();
-
-  @override
-  State<_WaitingDots> createState() => _WaitingDotsState();
+/// Formats a remaining room lifetime as `MM:SS` — `44:59` a second
+/// after creation, `00:00` at expiry. Negative values (a room that
+/// ended between the service's read and this frame) clamp to `00:00`,
+/// never to a negative display.
+String formatRoomRemaining(Duration remaining) {
+  final totalSeconds = remaining.inSeconds.clamp(0, 45 * 60);
+  final minutes = totalSeconds ~/ 60;
+  final seconds = totalSeconds % 60;
+  return '${minutes.toString().padLeft(2, '0')}:'
+      '${seconds.toString().padLeft(2, '0')}';
 }
 
-class _WaitingDotsState extends State<_WaitingDots>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1200),
-  )..repeat();
+/// The room-lifetime chip: "Room ends in NN:NN".
+///
+/// Minimal professional style — a small neutral pill with a clock icon
+/// and 12 pt grey text on a hairline border. No red, no orange, no
+/// alarm colour at any remaining time (including `00:00`: expiry is
+/// handled by the room ending, not by shouting at the user), no
+/// underline, no giant text. It ticks down only because the service
+/// notifies on its heartbeat tick and the panel rebuilds; this widget
+/// runs no timer of its own. Shared by the orb panel and the guest
+/// waiting state (see `TogetherGuestWaitingState`), so both read the
+/// same value the same way.
+class TogetherRoomRemainingIndicator extends StatelessWidget {
+  const TogetherRoomRemainingIndicator({required this.remaining, super.key});
 
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
+  final Duration remaining;
 
   @override
   Widget build(BuildContext context) {
-    final color = Theme.of(context).colorScheme.primary;
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, _) {
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (var i = 0; i < 3; i++)
-              Padding(
-                padding: const EdgeInsets.only(right: 2),
-                child: Opacity(
-                  opacity:
-                      0.35 +
-                      0.65 *
-                          (0.5 -
-                              0.5 *
-                                  math.cos(
-                                    (_controller.value * 2 * math.pi) -
-                                        (i * 2 * math.pi / 3),
-                                  )),
-                  child: Container(
-                    width: 5,
-                    height: 5,
-                    decoration: BoxDecoration(
-                      color: color,
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                ),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(YumeDesign.radiusPill),
+        border: Border.all(color: YumeDesign.hairline),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            Icons.schedule_rounded,
+            size: 14,
+            color: YumeDesign.textSecondary,
+          ),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              'Room ends in ${formatRoomRemaining(remaining)}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 12,
+                color: YumeDesign.textSecondary,
+                decoration: TextDecoration.none,
               ),
-          ],
-        );
-      },
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

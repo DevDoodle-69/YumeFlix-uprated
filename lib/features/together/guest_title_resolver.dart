@@ -56,6 +56,7 @@ class GuestTitleResolution {
     required this.videoUrl,
     this.preloadedStreams = const <StreamResult>[],
     this.sourceFallbackNotice,
+    this.startPositionMs = 0,
   });
 
   /// The item to open the player with.
@@ -77,6 +78,14 @@ class GuestTitleResolution {
   /// host's source was not in the resolved list. Null when the open used
   /// the host's exact source (or no source was named).
   final String? sourceFallbackNotice;
+
+  /// Where the guest's player starts, in milliseconds: the host's
+  /// CURRENT live position (see [TogetherRoomState.targetPositionMs]),
+  /// not the position from when the title first started and never 0
+  /// for a late joiner. The coordinator fills this in from the fresh
+  /// room state after resolution, so a slow resolve still lands on
+  /// where the host is now. 0 when the host is at the start.
+  final int startPositionMs;
 }
 
 /// The guest could not open the host's title automatically. [message] is
@@ -226,6 +235,7 @@ Future<GuestTitleResolution> resolveGuestTitle({
   )
   loadStreams,
   required Stream<List<MultimediaItem>> Function(String query) searchTitles,
+  int startPositionMs = 0,
 }) async {
   // Tier 1 — the exact token the host is playing.
   final episodeUrl = identity.episodeUrl;
@@ -243,6 +253,7 @@ Future<GuestTitleResolution> resolveGuestTitle({
       episodeUrl,
       loadStreams,
       identity.source,
+      startPositionMs: startPositionMs,
     );
     if (resolved != null) return resolved;
   }
@@ -254,6 +265,7 @@ Future<GuestTitleResolution> resolveGuestTitle({
       identity,
       loadDetails,
       loadStreams,
+      startPositionMs: startPositionMs,
     );
     if (resolved != null) return resolved;
   }
@@ -266,6 +278,7 @@ Future<GuestTitleResolution> resolveGuestTitle({
       identity,
       loadDetails,
       loadStreams,
+      startPositionMs: startPositionMs,
     );
     if (resolved != null) return resolved;
   }
@@ -281,8 +294,9 @@ Future<GuestTitleResolution?> _resolveFromItem(
   TogetherMediaIdentity identity,
   Future<MultimediaItem?> Function(MultimediaItem baseItem) loadDetails,
   Future<List<StreamResult>> Function(MultimediaItem item, String episodeUrl)
-  loadStreams,
-) async {
+  loadStreams, {
+  int startPositionMs = 0,
+}) async {
   MultimediaItem? detailed;
   try {
     detailed = await loadDetails(item);
@@ -299,6 +313,7 @@ Future<GuestTitleResolution?> _resolveFromItem(
     episode.url,
     loadStreams,
     identity.source,
+    startPositionMs: startPositionMs,
   );
 }
 
@@ -340,21 +355,20 @@ Future<GuestTitleResolution?> _resolveStreams(
   String episodeUrl,
   Future<List<StreamResult>> Function(MultimediaItem item, String episodeUrl)
   loadStreams,
-  String? hostSource,
-) async {
+  String? hostSource, {
+  int startPositionMs = 0,
+}) async {
   if (_isDirectToken(item, episodeUrl)) {
     return GuestTitleResolution(
       item: item,
       episode: episode,
       videoUrl: episodeUrl,
+      startPositionMs: startPositionMs,
     );
   }
   List<StreamResult> streams;
   try {
-    streams = await loadStreams(
-      item,
-      episodeUrl,
-    ).timeout(kGuestStreamsTimeout);
+    streams = await loadStreams(item, episodeUrl).timeout(kGuestStreamsTimeout);
   } catch (_) {
     return null;
   }
@@ -372,5 +386,6 @@ Future<GuestTitleResolution?> _resolveStreams(
     videoUrl: episodeUrl,
     preloadedStreams: ordered.streams,
     sourceFallbackNotice: notice,
+    startPositionMs: startPositionMs,
   );
 }

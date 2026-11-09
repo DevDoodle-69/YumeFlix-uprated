@@ -653,8 +653,8 @@ void main() {
         presencePayload(senderId: 'host-1', role: 'host', joined: true),
       );
       expect(guest.hostPresent, isTrue);
-      expect(guest.presenceLabel, 'HOST 👑 in room');
-      expect(guest.members.map((m) => m.displayLabel).toList(), ['HOST 👑']);
+      expect(guest.presenceLabel, 'HOST in room');
+      expect(guest.members.map((m) => m.displayLabel).toList(), ['HOST']);
 
       guest.debugReceivePayloadForTest(
         presencePayload(
@@ -665,9 +665,9 @@ void main() {
         ),
       );
       expect(guest.memberCount, 2);
-      expect(guest.presenceLabel, 'HOST 👑 + Guest in room');
+      expect(guest.presenceLabel, 'HOST + Guest in room');
       expect(guest.members.map((m) => m.displayLabel).toList(), [
-        'HOST 👑',
+        'HOST',
         'Arefin',
       ]);
 
@@ -679,9 +679,9 @@ void main() {
           displayName: 'Mim',
         ),
       );
-      expect(guest.presenceLabel, 'HOST 👑 + 2 guests in room');
+      expect(guest.presenceLabel, 'HOST + 2 guests in room');
       expect(guest.members.map((m) => m.displayLabel).toList(), [
-        'HOST 👑',
+        'HOST',
         'Arefin',
         'Mim',
       ]);
@@ -737,8 +737,8 @@ void main() {
         presencePayload(senderId: 'guest-2', role: 'guest', joined: false),
       );
       expect(guest.memberCount, 1);
-      expect(guest.presenceLabel, 'HOST 👑 in room');
-      expect(guest.members.map((m) => m.displayLabel).toList(), ['HOST 👑']);
+      expect(guest.presenceLabel, 'HOST in room');
+      expect(guest.members.map((m) => m.displayLabel).toList(), ['HOST']);
     });
 
     test('the 6th joiner is turned away and nobody else notices', () {

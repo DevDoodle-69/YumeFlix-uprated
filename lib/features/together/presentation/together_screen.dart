@@ -9,6 +9,7 @@ import '../sync_math.dart';
 import '../together_provider.dart';
 import '../together_service.dart';
 import 'together_connection_status.dart';
+import 'together_history_section.dart';
 import 'together_member_list.dart';
 import 'together_waiting_state.dart';
 
@@ -61,9 +62,7 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
         final service = ref.read(togetherServiceProvider);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              service.error ?? kTogetherRelayUnreachableMessage,
-            ),
+            content: Text(service.error ?? kTogetherRelayUnreachableMessage),
           ),
         );
       }
@@ -75,7 +74,9 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
   void _copyOtp(String otp) {
     Clipboard.setData(ClipboardData(text: otp));
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Room code copied — send it to your friend')),
+      const SnackBar(
+        content: Text('Room code copied — send it to your friend'),
+      ),
     );
   }
 
@@ -95,9 +96,8 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
     if (!mounted) return;
     final name = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => _GuestNameDialog(
-        initialName: service.lastGuestName ?? '',
-      ),
+      builder: (dialogContext) =>
+          _GuestNameDialog(initialName: service.lastGuestName ?? ''),
     );
     if (name == null || !mounted) return;
     await _run(
@@ -117,13 +117,14 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
     if (!mounted) return;
     final name = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => _GuestNameDialog(
-        initialName: service.lastGuestName ?? '',
-      ),
+      builder: (dialogContext) =>
+          _GuestNameDialog(initialName: service.lastGuestName ?? ''),
     );
     if (name == null || !mounted) return;
     await _run(
-      () => ref.read(togetherServiceProvider).joinRoom(last.otp, displayName: name),
+      () => ref
+          .read(togetherServiceProvider)
+          .joinRoom(last.otp, displayName: name),
     );
   }
 
@@ -219,9 +220,8 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
                 'Low-latency, drift-corrected sync — the guest follows '
                 'the host’s play, pause and seeks. Each phone streams '
                 'the title itself; the room only carries timing and chat.',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: colorScheme.onSurfaceVariant),
                 textAlign: TextAlign.center,
               ),
             ],
@@ -326,9 +326,7 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
               TextButton(
                 onPressed: _busy
                     ? null
-                    : () => ref
-                          .read(togetherServiceProvider)
-                          .dismissLastRoom(),
+                    : () => ref.read(togetherServiceProvider).dismissLastRoom(),
                 child: const Text('Dismiss'),
               ),
             ],
@@ -509,7 +507,7 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
         const SizedBox(height: 14),
         Text(
           service.guestPresent
-              ? '✓ Your friend joined — pick something to watch, play it, '
+              ? 'Your friend joined — pick something to watch, play it, '
                     'then press Start on the orb.'
               : 'Waiting for your friend to join with the code…',
           textAlign: TextAlign.center,
@@ -543,6 +541,36 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
           onPressed: _pickTitle,
           icon: const Icon(Icons.search_rounded),
           label: const Text('Pick a title to watch'),
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: () => showModalBottomSheet<void>(
+            context: context,
+            isScrollControlled: true,
+            builder: (sheetContext) => SafeArea(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(height: 8),
+                    Container(
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Theme.of(sheetContext).colorScheme.onSurface
+                            .withValues(alpha: 0.3),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    const TogetherHistorySection(),
+                    const SizedBox(height: 16),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          icon: const Icon(Icons.history_rounded),
+          label: const Text('From your history'),
         ),
       ],
     );
@@ -716,10 +744,7 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
           const SizedBox(height: 4),
           Text(
             'Send this code to your friend — no link, no account.',
-            style: TextStyle(
-              color: colorScheme.onSurfaceVariant,
-              fontSize: 12,
-            ),
+            style: TextStyle(color: colorScheme.onSurfaceVariant, fontSize: 12),
             textAlign: TextAlign.center,
           ),
         ],
@@ -744,8 +769,9 @@ class _GuestNameDialog extends StatefulWidget {
 }
 
 class _GuestNameDialogState extends State<_GuestNameDialog> {
-  late final TextEditingController _controller =
-      TextEditingController(text: widget.initialName);
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initialName,
+  );
   String? _error;
 
   @override
