@@ -1,11 +1,8 @@
-import 'dart:convert';
 import 'dart:ui';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-import '../chat_image_chunks.dart';
 import '../models.dart';
 import '../together_service.dart';
 import 'host_crown_icon.dart';
@@ -13,15 +10,11 @@ import 'host_crown_icon.dart';
 /// Glassmorphism chat over the video: the film stays visible but blurred
 /// behind the panel, so a message never means missing the scene.
 ///
-/// Text, reply-by-long-press with a quote above the composer, and photos
-/// via file_picker, up to 5 MB (2.8.0 — was ~120 KB). There is no emoji
-/// picker in the app UI (2.12.0): a user who wants an emoji in a message
-/// types it on their own system keyboard — message text is user content,
-/// not app UI — and the app itself renders none.
-/// Photos travel chunked over the relay (32 KiB pieces, SHA-256 checked on
-/// reassembly), so a big photo never stalls the room as one giant packet;
-/// sending / receiving progress shows as a slim row above the composer
-/// while a transfer is in flight.
+/// Text only (2.13.0 — image sending was removed), reply-by-long-press
+/// with a quote above the composer. There is no emoji picker in the app
+/// UI (2.12.0): a user who wants an emoji in a message types it on their
+/// own system keyboard — message text is user content, not app UI — and
+/// the app itself renders none.
 ///
 /// Message contents are never logged anywhere.
 class TogetherChatPanel extends StatefulWidget {
@@ -42,7 +35,6 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
   final TextEditingController _composer = TextEditingController();
   final ScrollController _scroll = ScrollController();
   TogetherChatMessage? _replyTo;
-  bool _sendingImage = false;
 
   @override
   void initState() {
@@ -87,52 +79,11 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
     );
   }
 
-  void _showSnack(String text) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
-  }
-
-  Future<void> _sendImage() async {
-    if (_sendingImage) return;
-    setState(() => _sendingImage = true);
-    try {
-      // file_picker 13: static pickFiles returns the picked files directly
-      // (no FilePicker.platform / FilePickerResult / withData); bytes are
-      // read through the picked file.
-      final picked = await FilePicker.pickFiles(type: FileType.image);
-      if (picked.isEmpty) return;
-      final bytes = await picked.first.readAsBytes();
-      if (bytes.isEmpty) return;
-      final result = await widget.service.sendChatImage(bytes);
-      if (!mounted) return;
-      switch (result) {
-        case TogetherImageSendResult.sent:
-          break;
-        case TogetherImageSendResult.notConnected:
-          _showSnack(
-            'Not connected to the Together relay — the photo wasn’t sent. '
-            'Try again once you’re reconnected.',
-          );
-        case TogetherImageSendResult.unreadable:
-          _showSnack(
-            'That file isn’t a readable photo — JPEG, PNG, WebP or GIF.',
-          );
-        case TogetherImageSendResult.tooLarge:
-          _showSnack(
-            'That photo is still over 5 MB after shrinking — '
-            'try a smaller one.',
-          );
-      }
-    } finally {
-      if (mounted) setState(() => _sendingImage = false);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final service = widget.service;
     final messages = service.messages;
-    final transfers = service.imageTransfers;
     final width = MediaQuery.sizeOf(context).width;
     final panelWidth = width > 560 ? 380.0 : width * 0.88;
 
@@ -197,7 +148,6 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
                               ),
                       ),
                       if (_replyTo != null) _replyQuote(),
-                      if (transfers.isNotEmpty) _transferRows(transfers),
                       _composerRow(context),
                     ],
                   ),
@@ -287,76 +237,12 @@ class _TogetherChatPanelState extends State<TogetherChatPanel> {
     );
   }
 
-  /// Slim progress rows for photos in flight (2.8.0 chunked transfer):
-  /// "Sending photo… 45%" / "Receiving photo… 45%", one row per transfer,
-  /// above the composer. A row disappears the moment its photo lands as a
-  /// message (or fails, in which case the room sees an honest line).
-  Widget _transferRows(List<TogetherImageTransfer> transfers) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          for (final transfer in transfers)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Row(
-                children: [
-                  Icon(
-                    transfer.isOutgoing
-                        ? Icons.upload_rounded
-                        : Icons.download_rounded,
-                    size: 16,
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: LinearProgressIndicator(
-                        value: transfer.progress,
-                        minHeight: 4,
-                        backgroundColor: colorScheme.onSurface.withValues(
-                          alpha: 0.15,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    '${transfer.isOutgoing ? 'Sending' : 'Receiving'} photo… '
-                    '${(transfer.progress * 100).round()}%',
-                    style: TextStyle(
-                      color: colorScheme.onSurfaceVariant,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
   Widget _composerRow(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
       child: Row(
         children: [
-          IconButton(
-            icon: _sendingImage
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.image_outlined),
-            tooltip: 'Send a photo',
-            onPressed: _sendImage,
-          ),
           Expanded(
             child: TextField(
               controller: _composer,
@@ -486,21 +372,10 @@ class _MessageBubble extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 2),
-              if (message.isImage)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: Image.memory(
-                    base64Decode(message.imageBase64!),
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, _, _) =>
-                        const Text('Photo could not be shown'),
-                  ),
-                )
-              else
-                Text(
-                  message.text ?? '',
-                  style: TextStyle(color: textColor, fontSize: 14),
-                ),
+              Text(
+                message.text ?? '',
+                style: TextStyle(color: textColor, fontSize: 14),
+              ),
             ],
           ),
         ),

@@ -222,6 +222,7 @@ void main() {
         durationMs: 7200000,
         playing: true,
       );
+      host.debugGuestReadyForTest();
       final states = published.where((p) => p['kind'] == 'state').toList();
       expect(states, isNotEmpty);
       final state = states.last;

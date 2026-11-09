@@ -9,7 +9,6 @@ import 'package:mqtt_client/mqtt_server_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:typed_data/typed_data.dart';
 
-import 'chat_image_chunks.dart';
 import 'connection.dart';
 import 'models.dart';
 import 'sync_math.dart';
@@ -83,33 +82,6 @@ enum TogetherStartState { hidden, browsing, ready, live }
 /// is only ever read alongside [TogetherService.isShowingLive].
 enum TogetherLiveHealth { healthy, degraded }
 
-/// What sending a chat photo can end in. The chat panel turns each one
-/// into an honest line — never a silent drop, never a generic failure.
-enum TogetherImageSendResult {
-  /// The photo fit (after shrinking, if it needed it) and its chunks are
-  /// on the wire.
-  sent,
-
-  /// No room, or the relay is not connected right now.
-  notConnected,
-
-  /// The bytes are not a readable JPEG / PNG / WebP / GIF.
-  unreadable,
-
-  /// Even after downscaling to the smallest step the photo is still over
-  /// the 5 MB budget. (An animated GIF over budget lands here too: the
-  /// only way to shrink it would destroy the animation.)
-  tooLarge,
-}
-
-/// Maximum chat image size: 5 MB of raw bytes (2.8.0 — was ~120 KB),
-/// defined in `chat_image_chunks.dart` as [kTogetherMaxChatImageBytes].
-/// A photo travels chunked (see that file): the relay cannot carry a
-/// 5 MB message in one packet, so the bytes are split into 32 KiB chunks
-/// with a SHA-256 integrity check on reassembly. A photo over the budget
-/// is downscaled on-device until it fits; only one that still cannot fit
-/// is refused.
-
 /// How often every member reports its own position (heartbeat), and how
 /// long a host may go quiet before the guest decides it has left.
 ///
@@ -138,6 +110,21 @@ const int kTogetherMemberStaleMs = 10000;
 /// 1 s, so 30 s of total silence genuinely means the relay or the host is
 /// gone — not that the host is browsing slowly.
 const Duration kTogetherWaitingStaleTimeout = Duration(seconds: 30);
+
+/// How long the host waits, once a guest has joined, for that guest's
+/// player to report ready before the wait-together hold expires
+/// (2.13.0). Generous on purpose: a slow title/stream resolve on a
+/// distant network takes tens of seconds, and a single broken guest
+/// phone must never freeze the host forever — but the bound is what
+/// stops one slow phone holding the room indefinitely (research:
+/// RMHTube caps its peer wait at 20 s, AIOStreams at 10 s, Kekik's
+/// seek barrier at 8 s). The bound only runs while a guest is actually
+/// in the room: a host alone with no guest ever joining stays held
+/// until a guest joins or the 45-minute room lifetime ends, which is
+/// what the room is for. On expiry the gate opens and the host is told
+/// briefly — they start with a tap, and the guest joins at the live
+/// point when they do get in.
+const Duration kTogetherGuestWaitTimeout = Duration(seconds: 20);
 
 /// Live-indicator health budgets (2.10.0, Bug 1). The player control
 /// panel shows a blinking green Live dot while every signal is inside
@@ -221,6 +208,11 @@ class TogetherService extends ChangeNotifier {
   Timer? _persistTimer;
   Timer? _reconnectTimer;
   Timer? _waitingStaleTimer;
+
+  /// The wait-together bound timer (see [kTogetherGuestWaitTimeout]):
+  /// started once a guest is in the room while the host is held, fires
+  /// [_expireHold]. Cancelled on release, reset and dispose.
+  Timer? _holdTimer;
 
   TogetherPhase _phase = TogetherPhase.idle;
   TogetherRole? _role;
@@ -314,6 +306,25 @@ class TogetherService extends ChangeNotifier {
   /// null when the open used the host's exact source.
   String? _guestAutoOpenNotice;
 
+  /// What step the guest's auto-open is on right now (2.13.0), e.g.
+  /// "Finding the title…" / "Getting the stream…" / "Opening the
+  /// player…" — the honest progress the guest (and, via the room, the
+  /// host) sees instead of a dead spinner. Null while nothing is opening.
+  String? _guestAutoOpenProgress;
+
+  /// Guest-side diagnostics for the last auto-open (2.13.0): what the
+  /// guest received (title / provider / source / live position) and
+  /// which tier failed and why. Shown in the Together screen's
+  /// diagnostics line so the next failure is diagnosable from the phone.
+  String? _guestAutoOpenDiagnostics;
+
+  /// The guest's manual "Enter — Watch Together" tap, as a monotonic
+  /// counter (2.13.0). The auto-open coordinator watches it and runs
+  /// the same open path on a tap. Deliberately NOT reset with the room:
+  /// the coordinator compares against the last id it handled, and a
+  /// reset to 0 would look like a new tap in a new room.
+  int _guestEnterRequestId = 0;
+
   /// The title the currently-open player was opened with, or null while
   /// no player is open (see [attachMedia] /
   /// [registerOrbStartAction]). The auto-open coordinator reads this to
@@ -376,23 +387,6 @@ class TogetherService extends ChangeNotifier {
 
   final List<TogetherChatMessage> _messages = <TogetherChatMessage>[];
 
-  /// Chunked images arriving from the other phone, by message id — the
-  /// reassembly state for each photo still missing chunks.
-  final Map<String, _IncomingImageTransfer> _incomingImages =
-      <String, _IncomingImageTransfer>{};
-
-  /// Chunked images this phone sent and the peer has not acked yet, by
-  /// message id — the chunk list is kept so a retry request for missing
-  /// indices can re-publish just those chunks. Entries expire after
-  /// 2 minutes ([_pruneSentImages]).
-  final Map<String, _SentImageTransfer> _sentImages =
-      <String, _SentImageTransfer>{};
-
-  /// Outgoing image transfers still being published, by message id, for
-  /// the sending-progress UI.
-  final Map<String, TogetherImageTransfer> _outgoingTransfers =
-      <String, TogetherImageTransfer>{};
-
   /// Recent peer heartbeats, keyed by sender id. Only the newest per peer
   /// is kept; entries older than 10 s are ignored by adoption.
   final Map<String, HeartbeatSample> _peerHeartbeats = <String, HeartbeatSample>{};
@@ -420,6 +414,25 @@ class TogetherService extends ChangeNotifier {
   /// the resume-target freshness check (see [hostLiveTargetMs]).
   int? _lastStateReceivedAtMs;
 
+  /// Host-clock stamp ([TogetherRoomState.hostTimestampMs]) of the latest
+  /// accepted state (2.13.0, Bug 2). A status or heartbeat is a HINT; the
+  /// retained state is the anchor — a status stamped at-or-before this
+  /// is older news about play/pause and must not overwrite it.
+  int? _lastStateHostTimestampMs;
+
+  /// NTP-style clock offset, host clock minus this phone's clock, in
+  /// milliseconds (2.13.0, research: Bilibili-Sync / SyncStream /
+  /// Jellyfin). Estimated from host traffic: each host state / heartbeat
+  /// carries the host's wall clock at send, and the guest's own
+  /// heartbeat echo measures the round-trip to the same broker, so the
+  /// one-way delay is ~RTT/2. Smoothed with an EMA of 0.3 and only
+  /// re-applied on moves over 100 ms (Bilibili's numbers). Until the
+  /// first sample ([_clockOffsetReady] false) the raw wall clock is
+  /// used, exactly as before — the clock gate (RMHTube): never correct
+  /// from an uncalibrated clock.
+  double _clockOffsetMs = 0;
+  bool _clockOffsetReady = false;
+
   /// Last local playback position, whatever the role: the rejoin snapshot
   /// and the host's Start position both come from here.
   int _lastLocalPositionMs = 0;
@@ -443,6 +456,64 @@ class TogetherService extends ChangeNotifier {
   bool _lastPublishedPlaying = false;
   double _lastPublishedSpeed = 1.0;
   DateTime? _lastPublishedAt;
+  bool _lastPublishedStalled = false;
+  bool _lastPublishedHeld = false;
+
+  /// True while the host's engine is buffering (2.13.0): the published
+  /// state carries `stalled: true` so guests freeze their projection
+  /// instead of running ahead of a stalled host.
+  bool _lastLocalStalled = false;
+
+  // ---- 2.13.0 wait-together hold (delimited) ----
+  //
+  // The host's playback is HELD at the shared start position until the
+  // first guest's player reports ready. While held the host's player
+  // stays paused ([_holdActive]), the retained state says
+  // `playing: false, held: true`, and the room status is
+  // `hostWaitingGuests`. The first `guest-ready` for the live title
+  // releases the hold ([_releaseHold]) and everyone starts together
+  // from [_holdPositionMs]; the 20 s bound ([_expireHold]) opens the
+  // gate instead if no guest gets ready, and the host starts with a
+  // tap. Once released or expired ([_holdDone]) the hold never
+  // re-engages for this room: a guest leaving mid-movie does not
+  // re-freeze the host, and a rejoiner catches up at the live point.
+
+  /// True while the initial-start hold is active (host, live room).
+  bool _holdActive = false;
+
+  /// True once the hold has ended for this room (released by a ready
+  /// guest, or expired by the bound). The hold is initial-start only.
+  bool _holdDone = false;
+
+  /// True when the hold ended by the bound expiring (no guest ready in
+  /// time), as opposed to a guest releasing it.
+  bool _holdExpired = false;
+
+  /// True when the hold was released by a guest reporting ready (as
+  /// opposed to expiring). The player hook reads this: only a
+  /// ready-release auto-plays the host's engine — after an expiry the
+  /// host starts with a tap.
+  bool _holdReleaseWasReady = false;
+
+  /// The shared start position, in milliseconds: where everyone starts
+  /// together when the hold releases. Set at [goLive] (and reset to 0
+  /// when the title changes while held).
+  int _holdPositionMs = 0;
+
+  /// The short line the host sees when the hold expires (2.13.0), or
+  /// null while the hold is active / released by a guest.
+  String? _holdNotice;
+
+  /// Per-guest readiness, by client id (host side only): the latest
+  /// `guest-ready` report from each guest. A guest that leaves is
+  /// removed with its presence.
+  final Map<String, _GuestReadyEntry> _guestReadiness =
+      <String, _GuestReadyEntry>{};
+
+  /// This phone's last readiness report as a guest (for dedupe): null
+  /// until the first report.
+  bool? _ownReady;
+  String? _ownReadyTitleKey;
 
   /// Set while a rejoining host is waiting on peer heartbeats to decide
   /// where the room has got to. The player hook consumes it once.
@@ -521,23 +592,6 @@ class TogetherService extends ChangeNotifier {
   bool get chatHasUnread => _chatHasUnread;
   TogetherLastRoom? get lastRoom => _lastRoom;
   List<TogetherChatMessage> get messages => List.unmodifiable(_messages);
-
-  /// Image transfers in flight right now — outgoing photos still being
-  /// published and incoming photos still missing chunks — for the chat
-  /// panel's progress rows. A transfer leaves this list the moment it
-  /// completes (the photo is a normal chat message by then) or fails.
-  List<TogetherImageTransfer> get imageTransfers {
-    return List.unmodifiable(<TogetherImageTransfer>[
-      ..._outgoingTransfers.values,
-      for (final transfer in _incomingImages.values)
-        TogetherImageTransfer(
-          messageId: transfer.reassembler.messageId,
-          isOutgoing: false,
-          receivedChunks: transfer.reassembler.receivedCount,
-          totalChunks: transfer.reassembler.totalChunks,
-        ),
-    ]);
-  }
 
   /// Latest live room status, pushed by the host. The guest's waiting
   /// screen renders this — it is a real MQTT fact, never a local guess.
@@ -630,6 +684,110 @@ class TogetherService extends ChangeNotifier {
   /// Brief fallback-source note for the player, or null when the open used
   /// the host's exact source.
   String? get guestAutoOpenNotice => _guestAutoOpenNotice;
+
+  /// What step the guest's auto-open is on right now (2.13.0), or null
+  /// while nothing is opening. Shown verbatim on the Together screen.
+  String? get guestAutoOpenProgress => _guestAutoOpenProgress;
+
+  /// Guest-side diagnostics for the last auto-open (2.13.0), or null.
+  /// Shown in the Together screen's diagnostics line.
+  String? get guestAutoOpenDiagnostics => _guestAutoOpenDiagnostics;
+
+  /// The manual "Enter — Watch Together" tap counter (2.13.0). The
+  /// auto-open coordinator watches it; each tap increments it by one.
+  int get guestEnterRequestId => _guestEnterRequestId;
+
+  // ---- 2.13.0 wait-together hold (read state) ----
+
+  /// True while this host's playback is HELD at the shared start
+  /// position, waiting for the first guest's player to report ready.
+  /// While held the host cannot play, resume or seek past the hold —
+  /// the player hook pauses the engine back, and the service never
+  /// publishes `playing: true` (see [reportLocalPlayback]).
+  bool get hostPlaybackHeld =>
+      _role == TogetherRole.host &&
+      _phase == TogetherPhase.live &&
+      _holdActive;
+
+  /// True while this guest's room is HELD (the host is waiting for a
+  /// guest's player to report ready). The guest's player stays paused
+  /// at the live position until the hold releases.
+  bool get guestPlaybackHeld =>
+      _role == TogetherRole.guest &&
+      _phase == TogetherPhase.live &&
+      (_roomState?.held ?? false);
+
+  /// The shared start position, in milliseconds.
+  int get holdPositionMs => _holdPositionMs;
+
+  /// True when the hold ended by the 20 s bound expiring (no guest
+  /// ready in time). The host then starts with a tap.
+  bool get holdExpired => _holdExpired;
+
+  /// The short line the host sees when the hold expires, or null.
+  String? get holdNotice => _holdNotice;
+
+  /// True when the hold was released by a guest reporting ready (the
+  /// player hook auto-plays the host's engine only then).
+  bool get holdReleaseWasReady => _holdReleaseWasReady;
+
+  /// Display names of guests in the room whose players have NOT
+  /// reported ready for the live title yet (host side). A guest that
+  /// never reports (an old client) counts as waiting.
+  List<String> get waitingGuestNames {
+    final ready = readyGuestIds;
+    return _presentMembers.values
+        .where(
+          (m) => m.role == TogetherRole.guest.name && !ready.contains(m.clientId),
+        )
+        .map((m) => m.displayLabel)
+        .toList();
+  }
+
+  /// Display names of guests whose players reported ready for the live
+  /// title (host side).
+  List<String> get readyGuestNames {
+    final ready = readyGuestIds;
+    return _presentMembers.values
+        .where(
+          (m) => m.role == TogetherRole.guest.name && ready.contains(m.clientId),
+        )
+        .map((m) => m.displayLabel)
+        .toList();
+  }
+
+  /// Client ids of guests ready for the live title right now.
+  Set<String> get readyGuestIds => _guestReadiness.entries
+      .where((e) => e.value.ready && _readyEntryForCurrentTitle(e.value))
+      .map((e) => e.key)
+      .toSet();
+
+  /// One honest line for the host while held: who is still loading.
+  String get holdWaitingLabel {
+    if (!hostPlaybackHeld) return '';
+    if (guestCount == 0) return 'Waiting for a guest to join…';
+    final waiting = waitingGuestNames;
+    if (waiting.isEmpty) return 'Waiting for guests to join playback…';
+    return 'Waiting for ${waiting.join(', ')} to join playback…';
+  }
+
+  /// The host clock, estimated from host traffic (2.13.0): this phone's
+  /// wall clock plus the NTP-style offset ([clockOffsetMs]), so a guest
+  /// projects the host's anchor in the host's clock domain even when
+  /// the two phones' clocks disagree by seconds (different countries,
+  /// different networks). Uncalibrated (no host traffic yet) this is
+  /// just the wall clock, exactly as before.
+  int hostClockNowMs() =>
+      DateTime.now().millisecondsSinceEpoch +
+      (_clockOffsetReady ? _clockOffsetMs.round() : 0);
+
+  /// The estimated clock offset, host clock minus this clock, in
+  /// milliseconds — or null until the first host-traffic sample
+  /// calibrates it.
+  double? get clockOffsetMs => _clockOffsetReady ? _clockOffsetMs : null;
+
+  /// True once a host-traffic sample has calibrated the clock offset.
+  bool get clockCalibrated => _clockOffsetReady;
 
   /// The title the currently-open player was opened with, or null while
   /// no player is open.
@@ -752,7 +910,11 @@ class TogetherService extends ChangeNotifier {
     if (_role == TogetherRole.host) return 0;
     final state = _roomState;
     if (state == null) return null;
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    // In the host's clock domain ([hostClockNowMs]): the two phones'
+    // clocks can disagree by seconds across countries, and projecting
+    // a host stamp with the guest's raw wall clock would be off by
+    // exactly that disagreement.
+    final nowMs = hostClockNowMs();
     return (state.targetPositionMs(nowMs: nowMs) - _lastLocalPositionMs).abs();
   }
 
@@ -770,7 +932,12 @@ class TogetherService extends ChangeNotifier {
   /// the past; the hook reads this on resume and seeks here.
   int? get hostLiveTargetMs {
     if (_phase != TogetherPhase.live) return null;
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    // Host-clock domain (see [hostClockNowMs]): the state and heartbeat
+    // stamps are host wall-clock times, so "now" must be too — for the
+    // projection. The AGES below are plain elapsed time on this phone,
+    // so they read the guest wall clock instead.
+    final nowMs = hostClockNowMs();
+    final guestNowMs = DateTime.now().millisecondsSinceEpoch;
     final state = _roomState;
     int? stateTarget;
     int? stateAgeMs;
@@ -782,9 +949,10 @@ class TogetherService extends ChangeNotifier {
         hostPlaying: state.playing,
         hostPlaybackSpeed: state.playbackSpeed,
         durationMs: state.durationMs,
+        hostStalled: state.stalled,
       );
       final receivedAt = _lastStateReceivedAtMs;
-      stateAgeMs = receivedAt == null ? null : nowMs - receivedAt;
+      stateAgeMs = receivedAt == null ? null : guestNowMs - receivedAt;
     }
     int? heartbeatTarget;
     int? heartbeatAgeMs;
@@ -792,14 +960,22 @@ class TogetherService extends ChangeNotifier {
         ? null
         : _peerHeartbeats[_hostClientId];
     if (hostHeartbeat != null) {
-      heartbeatAgeMs = nowMs - hostHeartbeat.receivedAtMs;
+      heartbeatAgeMs = guestNowMs - hostHeartbeat.receivedAtMs;
       heartbeatTarget = liveTargetMs(
         hostPositionMs: hostHeartbeat.positionMs,
+        // The heartbeat's position was stamped when this phone received
+        // it, in guest wall-clock time — advancing it by the host-clock
+        // "now" would add the clock offset as phantom playback. The
+        // heartbeat target is therefore advanced in the guest domain:
+        // position at receipt + elapsed guest time at the heartbeat's
+        // speed, which is exactly what `receivedAtMs` + `guestNowMs`
+        // express.
         hostTimestampMs: hostHeartbeat.receivedAtMs,
-        nowMs: nowMs,
+        nowMs: guestNowMs,
         hostPlaying: _roomStatus == TogetherRoomStatus.hostPlaying,
         hostPlaybackSpeed: hostHeartbeat.playbackSpeed,
         durationMs: state?.durationMs ?? 0,
+        hostStalled: state?.stalled ?? false,
       );
     }
     if (stateTarget != null &&
@@ -871,6 +1047,15 @@ class TogetherService extends ChangeNotifier {
   TogetherStartState get startState {
     if (!isSessionActive) return TogetherStartState.hidden;
     if (isShowingLive) return TogetherStartState.live;
+    // 2.13.0: a held room has STARTED — it is waiting for the first
+    // guest, not browsing for a title. The Start control stays gone and
+    // the orb stays hidden, exactly as in a playing room; the hold
+    // itself is shown by the hold pill / waiting label instead. A live
+    // room paused AFTER the hold ended is still `browsing` (pinned by
+    // test): the two paused states differ only in [_holdActive].
+    if (_phase == TogetherPhase.live && _holdActive) {
+      return TogetherStartState.live;
+    }
     if (_role == TogetherRole.host &&
         _phase == TogetherPhase.pendingHost &&
         _pendingMedia != null &&
@@ -933,6 +1118,84 @@ class TogetherService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Records what step the guest's auto-open is on ([progress], or null
+  /// while nothing is opening). Shown verbatim on the Together screen
+  /// while the title resolves, so the guest sees real progress instead
+  /// of a dead spinner.
+  void setGuestAutoOpenProgress(String? progress) {
+    if (_guestAutoOpenProgress == progress) return;
+    _guestAutoOpenProgress = progress;
+    notifyListeners();
+  }
+
+  /// Records the guest-side diagnostics for the last auto-open
+  /// ([diagnostics], or null). Shown in the Together screen's
+  /// diagnostics line.
+  void setGuestAutoOpenDiagnostics(String? diagnostics) {
+    if (_guestAutoOpenDiagnostics == diagnostics) return;
+    _guestAutoOpenDiagnostics = diagnostics;
+    notifyListeners();
+  }
+
+  /// Guest: the manual "Enter — Watch Together" tap (2.13.0). Bumps the
+  /// request counter the auto-open coordinator watches; the coordinator
+  /// then runs the same open path auto-open uses, so Enter works even
+  /// when auto-open stalled or failed. Safe to tap while an open is
+  /// already in flight (the coordinator ignores a duplicate).
+  void requestGuestEnter() {
+    _guestEnterRequestId += 1;
+    notifyListeners();
+  }
+
+  /// Guest: reports this phone's player readiness to the host (2.13.0
+  /// wait-together barrier). Call with `true` when the player's open
+  /// on the live title, with `false` (and the honest reason in [note])
+  /// when the title could not be opened after retrying. Only the
+  /// change is published: a repeat of the same report for the same
+  /// title is a no-op. [titleKey] is the open key of the title the
+  /// player opened (see [togetherTitleKey]); the host only counts
+  /// readiness for the live title.
+  void reportGuestReady(bool ready, {String? titleKey, String? note}) {
+    if (_role != TogetherRole.guest || !isSessionActive) return;
+    if (_ownReady == ready && _ownReadyTitleKey == titleKey) return;
+    _ownReady = ready;
+    _ownReadyTitleKey = titleKey;
+    _publishToRoom(
+      TogetherGuestReadyMessage(
+        ready: ready,
+        senderId: clientId,
+        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        displayName: _ownDisplayName,
+        titleKey: titleKey,
+        note: note,
+      ).toJson(),
+    );
+  }
+
+  /// Test-only: expires the wait-together hold right now, as if the
+  /// 20 s bound had fired. Lets tests pin the expiry notice and the
+  /// host's manual start without waiting 20 s.
+  @visibleForTesting
+  void debugExpireHoldForTest() => _expireHold();
+
+  /// Simulates the first guest's player reporting ready — the exact
+  /// signal that releases the wait-together hold. Test-only: production
+  /// readiness arrives as a `guest-ready` payload on the relay (see
+  /// [_handleGuestReady]); this feeds the same message object through
+  /// the same handler, so the hold/release path under test is the real
+  /// one. [titleKey] defaults to null (a pre-2.13.0 guest, which counts
+  /// for any title); pass the live title's key to pin the match.
+  void debugGuestReadyForTest({String senderId = 'guest-1', String? titleKey}) {
+    _handleGuestReady(
+      TogetherGuestReadyMessage(
+        ready: true,
+        senderId: senderId,
+        timestampMs: _nowMs(),
+        titleKey: titleKey,
+      ).toJson(),
+    );
+  }
+
   // ---- Guest display name (2.11.0) ----
 
   static const String _kLastGuestNameKey = 'together.last_guest_name';
@@ -972,8 +1235,8 @@ class TogetherService extends ChangeNotifier {
   /// Test-only transport tap: when set, every JSON publish that would go
   /// to the room topic is also handed to this sink ([_publishToRoom]),
   /// and [_canPublish] is true even with no live relay — so tests can
-  /// verify exactly what the host publishes (state on seek/pause, chunk
-  /// sequences, retry requests) without a broker. Never set in
+  /// verify exactly what the host publishes (state on seek/pause, status
+  /// pushes, chat) without a broker. Never set in
   /// production; production publishing is unchanged (sink null means
   /// "connected to the relay" is the only way to publish).
   @visibleForTesting
@@ -1518,11 +1781,13 @@ class TogetherService extends ChangeNotifier {
     _persistTimer?.cancel();
     _reconnectTimer?.cancel();
     _waitingStaleTimer?.cancel();
+    _holdTimer?.cancel();
     _heartbeatTimer = null;
     _hostSilenceTimer = null;
     _persistTimer = null;
     _reconnectTimer = null;
     _waitingStaleTimer = null;
+    _holdTimer = null;
     _role = null;
     _otp = null;
     _roomCreatedAtMs = null;
@@ -1538,7 +1803,27 @@ class TogetherService extends ChangeNotifier {
     _guestAutoOpenPending = false;
     _guestAutoOpenFailure = null;
     _guestAutoOpenNotice = null;
+    _guestAutoOpenProgress = null;
+    _guestAutoOpenDiagnostics = null;
     _playerOpenMedia = null;
+    // 2.13.0: a fresh room starts unheld, with no readiness and no
+    // clock sample. The Enter request counter deliberately survives
+    // (see [_guestEnterRequestId]): it is monotonic across rooms.
+    _holdActive = false;
+    _holdDone = false;
+    _holdExpired = false;
+    _holdReleaseWasReady = false;
+    _holdPositionMs = 0;
+    _holdNotice = null;
+    _guestReadiness.clear();
+    _ownReady = null;
+    _ownReadyTitleKey = null;
+    _lastStateHostTimestampMs = null;
+    _clockOffsetMs = 0;
+    _clockOffsetReady = false;
+    _lastLocalStalled = false;
+    _lastPublishedStalled = false;
+    _lastPublishedHeld = false;
     // A fresh room starts with nothing playing: a stale tick from the
     // previous room must never make a Start button appear before the new
     // movie actually plays.
@@ -1548,12 +1833,6 @@ class TogetherService extends ChangeNotifier {
     _roomStatus = TogetherRoomStatus.hostBrowsing;
     _hostClientId = null;
     _presentMembers.clear();
-    for (final transfer in _incomingImages.values) {
-      transfer.retryTimer?.cancel();
-    }
-    _incomingImages.clear();
-    _sentImages.clear();
-    _outgoingTransfers.clear();
     _reconnecting = false;
     _reconnectAttempt = 0;
     _connectedRelayLabel = null;
@@ -1616,6 +1895,9 @@ class TogetherService extends ChangeNotifier {
         // from it.
         _lastLocalPositionMs = 0;
         _lastLocalDurationMs = 0;
+        // 2.13.0: a new title while held restarts the shared start
+        // position too — everyone starts the new title together at 0.
+        if (_holdActive) _holdPositionMs = 0;
       }
     }
     if (_role == TogetherRole.host && _phase == TogetherPhase.live) {
@@ -1636,6 +1918,19 @@ class TogetherService extends ChangeNotifier {
   /// player hook passes it); when omitted the last reported tick is used.
   /// Never assume playing: a paused host that publishes `playing: true`
   /// makes the guest play a title the host is not playing.
+  ///
+  /// 2.13.0 — wait-together gate: going live does NOT start playback
+  /// until the first guest's player reports ready, unless a guest is
+  /// already ready for this title. While held the room is live but the
+  /// published state says `playing: false, held: true` at the shared
+  /// start position, the status is `hostWaitingGuests`, and the host's
+  /// own engine is paused at that position by the player hook. The
+  /// first `guest-ready` releases the hold ([_releaseHold]) and everyone
+  /// starts together from the start position with no extra tap; the
+  /// 20 s bound ([_expireHold]) opens the gate instead if no guest gets
+  /// ready, and the host starts with a tap. A host alone with no guest
+  /// ever joining stays held — that is what the room is for — until the
+  /// 45-minute room lifetime ends it.
   void goLive({
     required int positionMs,
     required int durationMs,
@@ -1646,14 +1941,38 @@ class TogetherService extends ChangeNotifier {
     _hostGone = false;
     _lastLocalPositionMs = positionMs;
     _lastLocalDurationMs = durationMs;
+    _holdPositionMs = positionMs;
+    _holdDone = false;
+    _holdExpired = false;
+    _holdReleaseWasReady = false;
+    _holdNotice = null;
+    _holdTimer?.cancel();
+    _holdTimer = null;
     if (playing != null) _lastLocalPlaying = playing;
-    _publishState(
-      force: true,
-      positionMs: positionMs,
-      durationMs: durationMs,
-      playing: _lastLocalPlaying,
-    );
-    _maybePublishStatus();
+    // Once the hold has ended for this room (released or expired) it
+    // never re-engages: a guest leaving mid-movie does not re-freeze
+    // the host, and a second Start in the same room starts at once.
+    _holdActive = !_holdDone && !_anyGuestReadyForCurrentTitle();
+    if (_holdActive) {
+      // Held: playback waits, paused at the shared start position.
+      _lastLocalPlaying = false;
+      _publishState(
+        force: true,
+        positionMs: positionMs,
+        durationMs: durationMs,
+        playing: false,
+      );
+      _maybePublishStatus();
+      _armHoldTimerIfGuestsPresent();
+    } else {
+      _publishState(
+        force: true,
+        positionMs: positionMs,
+        durationMs: durationMs,
+        playing: _lastLocalPlaying,
+      );
+      _maybePublishStatus();
+    }
     unawaited(_persistLastRoom());
     notifyListeners();
   }
@@ -1678,14 +1997,31 @@ class TogetherService extends ChangeNotifier {
   /// indistinguishable from fast playback and waits up to a second for
   /// the next steady tick. Defaults to 1.0 for callers that do not know
   /// the speed yet (the pre-2.11.0 behaviour).
+  ///
+  /// [stalled] (2.13.0) is whether the engine is buffering right now.
+  /// A stall flip publishes at once, like a play/pause flip, and the
+  /// published state carries it so guests freeze their projection
+  /// instead of running ahead of a stalled host.
+  ///
+  /// 2.13.0 wait-together gate: while the host is held, [playing] is
+  /// forced to false and the position is clamped to the hold position —
+  /// a play tap, a resume or a seek past the hold never reaches the
+  /// room, whatever the engine did. The player hook pauses the engine
+  /// back; this is the service-level backstop.
   void reportLocalPlayback({
     required int positionMs,
     required int durationMs,
     required bool playing,
     double playbackSpeed = 1.0,
+    bool stalled = false,
   }) {
     final speed = playbackSpeed.clamp(0.25, 4.0);
     final now = DateTime.now();
+    final held = _role == TogetherRole.host && _holdActive;
+    final effectivePlaying = held ? false : playing;
+    final effectivePosition = held && positionMs > _holdPositionMs + 500
+        ? _holdPositionMs
+        : positionMs;
     // A seek is a position jump the wall clock cannot explain: backwards
     // at all, any move while paused (nothing advances a paused clock), or
     // a forward jump past what the elapsed time explains at the current
@@ -1695,21 +2031,23 @@ class TogetherService extends ChangeNotifier {
     // tick, up to a second later. The elapsed-aware check catches those
     // at once, and a false positive only costs one extra publish of the
     // correct position.
-    final deltaMs = positionMs - _lastLocalPositionMs;
+    final deltaMs = effectivePosition - _lastLocalPositionMs;
     final elapsedMs = _lastReportAt == null
         ? 0
         : now.difference(_lastReportAt!).inMilliseconds;
     final expectedAdvanceMs = (elapsedMs * speed).round();
-    final isSeek = !playing
+    final isSeek = !effectivePlaying
         ? deltaMs != 0
         : deltaMs < 0 || deltaMs - expectedAdvanceMs > kSyncSeekExcessMs;
     _lastReportAt = now;
-    _lastLocalPositionMs = positionMs;
+    _lastLocalPositionMs = effectivePosition;
     _lastLocalDurationMs = durationMs;
-    final playingFlipped = playing != _lastLocalPlaying;
-    _lastLocalPlaying = playing;
+    final playingFlipped = effectivePlaying != _lastLocalPlaying;
+    _lastLocalPlaying = effectivePlaying;
     final speedChanged = speed != _lastLocalSpeed;
     _lastLocalSpeed = speed;
+    final stalledFlipped = stalled != _lastLocalStalled;
+    _lastLocalStalled = stalled;
     // A play/pause flip is a UI-visible state change in every phase, so
     // the listeners rebuild for it — never silently:
     // * pending host: the Start button appearing / vanishing;
@@ -1727,7 +2065,8 @@ class TogetherService extends ChangeNotifier {
     final due =
         _lastPublishedAt == null ||
         now.difference(_lastPublishedAt!).inMilliseconds >= 1000;
-    if (playingFlipped || isSeek || speedChanged || (playing && due)) {
+    if (playingFlipped || isSeek || speedChanged || stalledFlipped ||
+        (effectivePlaying && due)) {
       _publishState(force: true);
     }
     // A play/pause flip is a status change too (playing <-> paused) — the
@@ -1750,11 +2089,15 @@ class TogetherService extends ChangeNotifier {
     // The speed is part of the change detection, not just the payload: a
     // host that switches 1x -> 2x with the same position and transport
     // would otherwise be dropped here as "nothing changed", and every
-    // guest would keep chasing a 1x target.
+    // guest would keep chasing a 1x target. Stall and hold are too:
+    // a stall flip or a hold release with the same position and
+    // transport is still a new anchor.
     if (!force &&
         pos == _lastPublishedPositionMs &&
         isPlaying == _lastPublishedPlaying &&
-        _lastLocalSpeed == _lastPublishedSpeed) {
+        _lastLocalSpeed == _lastPublishedSpeed &&
+        _lastLocalStalled == _lastPublishedStalled &&
+        _holdActive == _lastPublishedHeld) {
       return;
     }
     _sequence += 1;
@@ -1768,11 +2111,15 @@ class TogetherService extends ChangeNotifier {
       hostId: clientId,
       playbackSpeed: _lastLocalSpeed,
       createdAtMs: _roomCreatedAtMs ?? 0,
+      held: _holdActive,
+      stalled: _lastLocalStalled,
     );
     _roomState = state;
     _lastPublishedPositionMs = pos;
     _lastPublishedPlaying = isPlaying;
     _lastPublishedSpeed = _lastLocalSpeed;
+    _lastPublishedStalled = _lastLocalStalled;
+    _lastPublishedHeld = _holdActive;
     _lastPublishedAt = DateTime.now();
     _publish(topic, <String, dynamic>{
       'kind': 'state',
@@ -1787,12 +2134,135 @@ class TogetherService extends ChangeNotifier {
   /// the host publishes — and for the status the guest renders.
   TogetherRoomStatus _deriveHostStatus() {
     if (_phase == TogetherPhase.live) {
+      if (_holdActive) return TogetherRoomStatus.hostWaitingGuests;
       return _lastLocalPlaying
           ? TogetherRoomStatus.hostPlaying
           : TogetherRoomStatus.hostPaused;
     }
     if (_pendingMedia != null) return TogetherRoomStatus.hostPickedTitle;
     return TogetherRoomStatus.hostBrowsing;
+  }
+
+  // ---- 2.13.0 wait-together hold (host side) ----
+
+  /// True when any guest has reported ready for the live title (or for
+  /// no particular title, from an older client). Readiness for another
+  /// title does not count: a guest ready for yesterday's film does not
+  /// release today's hold.
+  bool _anyGuestReadyForCurrentTitle() =>
+      _guestReadiness.values.any(_readyEntryForCurrentTitle);
+
+  bool _readyEntryForCurrentTitle(_GuestReadyEntry entry) {
+    if (!entry.ready) return false;
+    final key = entry.titleKey;
+    if (key == null) return true;
+    final media = currentMedia;
+    if (media == null) return false;
+    return key == togetherTitleKey(media);
+  }
+
+  /// Arms the 20 s hold bound once a guest is in the room (see
+  /// [kTogetherGuestWaitTimeout]). A no-op while no guest is present —
+  /// a host alone stays held — and while the timer is already running.
+  void _armHoldTimerIfGuestsPresent() {
+    if (!_holdActive || _holdTimer != null) return;
+    if (guestCount == 0) return;
+    _holdTimer = Timer(kTogetherGuestWaitTimeout, _expireHold);
+  }
+
+  /// Releases the hold because the first guest's player reported ready:
+  /// everyone starts together from the shared start position, with no
+  /// extra tap from anyone. Publishes the release anchor
+  /// (`playing: true, held: false` at the hold position) at once; the
+  /// host's own engine starts on the service change (player hook) and
+  /// the guests follow the state.
+  void _releaseHold() {
+    if (!_holdActive) return;
+    _holdActive = false;
+    _holdDone = true;
+    _holdReleaseWasReady = true;
+    _holdNotice = null;
+    _holdTimer?.cancel();
+    _holdTimer = null;
+    _lastLocalPlaying = true;
+    _lastLocalPositionMs = _holdPositionMs;
+    _publishState(
+      force: true,
+      positionMs: _holdPositionMs,
+      durationMs: _lastLocalDurationMs,
+      playing: true,
+    );
+    _maybePublishStatus();
+    notifyListeners();
+  }
+
+  /// The hold bound fired with no guest ready in time: the gate opens,
+  /// the host is told briefly, and the host starts with a tap — the
+  /// host is never frozen forever by one broken phone. The guest keeps
+  /// the Enter button and its retries, and joins at the live point
+  /// when it does get in (late joiner). Deliberately does NOT auto-play
+  /// the host: after an expiry the host decides when to start.
+  void _expireHold() {
+    if (!_holdActive) return;
+    if (_anyGuestReadyForCurrentTitle()) {
+      _releaseHold();
+      return;
+    }
+    _holdActive = false;
+    _holdDone = true;
+    _holdExpired = true;
+    _holdReleaseWasReady = false;
+    _holdTimer = null;
+    final waiting = waitingGuestNames;
+    _holdNotice = waiting.isEmpty
+        ? 'No guest could open the title yet — you can start, '
+              'they’ll join at the live point.'
+        : '${waiting.join(', ')} couldn’t open the title yet — you can '
+              'start, they’ll join at the live point.';
+    // Publish the un-held paused anchor so guests stop showing
+    // "waiting" and the room status settles on "Host paused".
+    _publishState(
+      force: true,
+      positionMs: _holdPositionMs,
+      durationMs: _lastLocalDurationMs,
+      playing: false,
+    );
+    _maybePublishStatus();
+    notifyListeners();
+  }
+
+  /// Records one guest's readiness report (host side) and releases the
+  /// hold on the first ready report for the live title. A `ready:
+  /// false` report only ever informs the host — it never releases or
+  /// extends the hold.
+  void _handleGuestReady(Map<String, dynamic> json) {
+    TogetherGuestReadyMessage message;
+    try {
+      message = TogetherGuestReadyMessage.fromJson(json);
+    } catch (_) {
+      return;
+    }
+    if (message.senderId.isEmpty || message.senderId == clientId) return;
+    if (_role != TogetherRole.host) return;
+    _notePeerPresent(
+      message.senderId,
+      TogetherRole.guest.name,
+      displayName: message.displayName,
+    );
+    _guestReadiness[message.senderId] = _GuestReadyEntry(
+      ready: message.ready,
+      displayName: message.displayName,
+      titleKey: message.titleKey,
+      note: message.note,
+      updatedAtMs: DateTime.now().millisecondsSinceEpoch,
+    );
+    notifyListeners();
+    if (message.ready &&
+        _holdActive &&
+        _phase == TogetherPhase.live &&
+        _readyEntryForCurrentTitle(_guestReadiness[message.senderId]!)) {
+      _releaseHold();
+    }
   }
 
   /// Host: publishes the current status (non-retained) when it changed.
@@ -1971,165 +2441,8 @@ class TogetherService extends ChangeNotifier {
     _publishToRoom(<String, dynamic>{'kind': 'chat', ...message.toJson()});
   }
 
-  /// Sends a photo from the gallery/camera roll — up to 5 MB (2.8.0,
-  /// was ~120 KB), JPEG / PNG / WebP / GIF.
-  ///
-  /// * A photo within budget is sent exactly as picked: no quality loss,
-  ///   and a GIF keeps its animation.
-  /// * A photo over budget is downscaled on-device (stepwise, re-encoded
-  ///   as PNG) until it fits; only one that still cannot fit is refused
-  ///   ([TogetherImageSendResult.tooLarge]). An animated GIF over budget
-  ///   is refused rather than silently flattened to a still — the only
-  ///   way to shrink it would destroy the animation.
-  /// * The bytes travel CHUNKED (see `chat_image_chunks.dart`): 32 KiB
-  ///   pieces with a SHA-256 integrity check, so the public relay never
-  ///   sees a 5 MB packet. The sender's bubble appears at once (local
-  ///   echo) with a sending-progress row while the chunks go out; the
-  ///   receiver reassembles, verifies, and only then shows the photo.
-  Future<TogetherImageSendResult> sendChatImage(
-    Uint8List bytes, {
-    String? replyToId,
-    String? replyToText,
-  }) async {
-    if (!isSessionActive || !_canPublish) {
-      return TogetherImageSendResult.notConnected;
-    }
-    if (bytes.isEmpty) return TogetherImageSendResult.unreadable;
-    final fitted = await _fitImageToBudget(bytes);
-    if (fitted == null) {
-      // Not an image at all vs. a real image that would not shrink
-      // enough: the panel tells the user which one it was.
-      return detectImageFormat(bytes) == TogetherImageFormat.unknown
-          ? TogetherImageSendResult.unreadable
-          : TogetherImageSendResult.tooLarge;
-    }
-    final message = _buildMessage(
-      imageBase64: base64Encode(fitted),
-      replyToId: replyToId,
-      replyToText: replyToText,
-    );
-    _messages.add(message);
-    notifyListeners();
-    await _publishImageChunks(message: message, bytes: fitted);
-    return TogetherImageSendResult.sent;
-  }
-
-  /// Publishes [bytes] as a chunked image message, keeping the chunk list
-  /// so a retry request from the peer can re-publish just the missing
-  /// pieces. Progress is exposed through [imageTransfers] while sending.
-  Future<void> _publishImageChunks({
-    required TogetherChatMessage message,
-    required Uint8List bytes,
-  }) async {
-    final chunks = splitImageIntoChunks(
-      bytes: bytes,
-      messageId: message.id,
-      senderId: clientId,
-      timestampMs: message.timestampMs,
-      replyToId: message.replyToId,
-      replyToText: message.replyToText,
-    );
-    if (chunks.isEmpty) return;
-    _pruneSentImages();
-    _sentImages[message.id] = _SentImageTransfer(
-      messageId: message.id,
-      chunks: chunks,
-      sentAt: DateTime.now(),
-    );
-    _outgoingTransfers[message.id] = TogetherImageTransfer(
-      messageId: message.id,
-      isOutgoing: true,
-      receivedChunks: 0,
-      totalChunks: chunks.length,
-    );
-    notifyListeners();
-    for (var i = 0; i < chunks.length; i++) {
-      _publishToRoom(chunks[i].toJson());
-      // Progress, throttled to 5% steps: a 5 MB photo is ~160 chunks,
-      // and the chat must not rebuild 160 times for one send.
-      final progress = (i + 1) / chunks.length;
-      final shown = _outgoingTransfers[message.id];
-      if (shown != null &&
-          (progress - shown.progress >= 0.05 || i == chunks.length - 1)) {
-        _outgoingTransfers[message.id] = TogetherImageTransfer(
-          messageId: message.id,
-          isOutgoing: true,
-          receivedChunks: i + 1,
-          totalChunks: chunks.length,
-        );
-        notifyListeners();
-      }
-      // Pace chunk publishes: the public relay drops rapid bursts (see
-      // [kTogetherChatChunkPublishGap]) — a 1 MB photo takes ~8 s to send
-      // with progress shown, instead of arriving with holes. Skipped for
-      // the test sink, which is not a real broker, so unit tests stay fast.
-      if (i < chunks.length - 1 && debugPublishSinkForTest == null) {
-        await Future<void>.delayed(kTogetherChatChunkPublishGap);
-      }
-    }
-    _outgoingTransfers.remove(message.id);
-    notifyListeners();
-    // The retained chunk list lives until the peer acks (or 2 minutes
-    // pass): a retry request that arrives after the send finished still
-    // gets its missing chunks.
-  }
-
-  /// Fits [bytes] to the 5 MB budget: within budget and a known format,
-  /// the original bytes go untouched; over budget, decode and shrink
-  /// stepwise (PNG re-encode) until it fits; null when it cannot be read
-  /// as an image at all, or still will not fit at the smallest step.
-  Future<Uint8List?> _fitImageToBudget(Uint8List bytes) async {
-    final format = detectImageFormat(bytes);
-    if (bytes.length <= kTogetherMaxChatImageBytes) {
-      if (format != TogetherImageFormat.unknown) return bytes;
-      // Small but unrecognised: it may still be a decodable image (e.g.
-      // BMP) — fall through to the decode path, which re-encodes as PNG.
-    } else if (format == TogetherImageFormat.gif) {
-      // Animated GIF over budget: shrinking would flatten it to a still.
-      return null;
-    }
-    // Over budget (or an unknown-but-decodable format): each step roughly
-    // quarters the pixel count, so photographic images land well under
-    // budget long before the smallest step. PNG is the only compressed
-    // re-encode dart:ui offers.
-    for (final longSide in const <int>[2048, 1600, 1280, 1024, 800, 640, 480]) {
-      final shrunk = await _downscaleImage(bytes, longSide: longSide);
-      if (shrunk != null && shrunk.length <= kTogetherMaxChatImageBytes) {
-        return shrunk;
-      }
-    }
-    return null;
-  }
-
-  /// Drops entries older than 2 minutes from the retained sent-image
-  /// store: a peer that slow has long since given up asking.
-  void _pruneSentImages() {
-    final cutoff = DateTime.now().subtract(const Duration(seconds: 120));
-    _sentImages.removeWhere((_, sent) => sent.sentAt.isBefore(cutoff));
-  }
-
-  /// Downscales [bytes] so its width is at most [longSide] and re-encodes
-  /// as PNG. Returns null when the bytes are not a decodable image.
-  Future<Uint8List?> _downscaleImage(
-    Uint8List bytes, {
-    required int longSide,
-  }) async {
-    try {
-      final codec = await ui.instantiateImageCodec(
-        bytes,
-        targetWidth: longSide,
-      );
-      final frame = await codec.getNextFrame();
-      final data = await frame.image.toByteData(format: ui.ImageByteFormat.png);
-      return data?.buffer.asUint8List();
-    } catch (_) {
-      return null;
-    }
-  }
-
   TogetherChatMessage _buildMessage({
     String? text,
-    String? imageBase64,
     String? replyToId,
     String? replyToText,
   }) {
@@ -2139,7 +2452,6 @@ class TogetherService extends ChangeNotifier {
       senderId: clientId,
       senderLabel: 'You',
       text: text,
-      imageBase64: imageBase64,
       replyToId: replyToId,
       replyToText: replyToText,
       timestampMs: DateTime.now().millisecondsSinceEpoch,
@@ -2457,12 +2769,6 @@ class TogetherService extends ChangeNotifier {
         _handleState(json);
       case 'chat':
         _handleChat(json);
-      case 'chat-image-chunk':
-        _handleImageChunk(json);
-      case 'chat-image-request':
-        unawaited(_handleImageRequest(json));
-      case 'chat-image-ack':
-        _handleImageAck(json);
       case 'heartbeat':
         _handleHeartbeat(json);
       case 'bye':
@@ -2473,6 +2779,8 @@ class TogetherService extends ChangeNotifier {
         _handleStatus(json);
       case 'presence':
         _handlePresence(json);
+      case 'guest-ready':
+        _handleGuestReady(json);
     }
   }
 
@@ -2490,6 +2798,23 @@ class TogetherService extends ChangeNotifier {
   /// A live room-status push from the host. The guest renders it directly:
   /// this is the waiting screen's "Host is still finding a movie…" /
   /// "Host picked X" line, and the live screen's playing/paused line.
+  ///
+  /// 2.13.0 — Bug 2 (proven by test: a stale heartbeat/status arriving
+  /// after a fresher retained state flipped the guest to "Host paused"
+  /// while the host played, and the 1 s heartbeat kept re-asserting it):
+  /// a status is a HINT, the retained state is the anchor. While live
+  /// with a state in hand, a status stamped at-or-before the state's
+  /// host stamp is older news about play/pause and must not overwrite
+  /// it — both stamps are host wall-clock times, so they compare
+  /// directly. The status still proves the host is here and still
+  /// carries the picked title. Before going live (or with no state yet)
+  /// the status is the only source and applies as before.
+  ///
+  /// The reconnect re-sync flag is deliberately NOT consumed here any
+  /// more: a status arriving before the re-delivered retained state
+  /// used to eat the flag, and the retained state (same sequence) was
+  /// then dropped without applying — the replay guidance (real-time
+  /// systems skill) is that the re-delivered anchor always applies.
   void _handleStatus(Map<String, dynamic> json) {
     TogetherRoomStatusMessage message;
     try {
@@ -2500,13 +2825,19 @@ class TogetherService extends ChangeNotifier {
     if (message.senderId.isEmpty) return;
     _notePeerPresent(message.senderId, TogetherRole.host.name);
     _learnRoomCreatedAt(message.createdAtMs);
-    _roomStatus = message.status;
+    final stateStamp = _lastStateHostTimestampMs;
+    final statusIsStalePlayPause =
+        _role == TogetherRole.guest &&
+        _phase == TogetherPhase.live &&
+        _roomState != null &&
+        stateStamp != null &&
+        message.timestampMs <= stateStamp;
+    if (!statusIsStalePlayPause) {
+      _roomStatus = message.status;
+    }
     // A status proves the host is here — a host marked gone by the
-    // silence timer is back the moment its status arrives — and it
-    // consumes the reconnect re-sync flag (the waiting screen rebuilds
-    // for the status itself).
+    // silence timer is back the moment its status arrives.
     _clearHostGone();
-    _resyncOnNextState = false;
     if (message.media != null) {
       // The host is the source of truth about the title while the guest is
       // still waiting; once live, the retained state owns the title.
@@ -2588,9 +2919,15 @@ class TogetherService extends ChangeNotifier {
         }
         _publishStatusNow();
         if (_phase == TogetherPhase.live) _publishState(force: true);
+        // A guest is in the room while the host is held: the 20 s hold
+        // bound starts now (a host alone stays held indefinitely).
+        _armHoldTimerIfGuestsPresent();
       }
     } else {
       _presentMembers.remove(event.senderId);
+      // A guest that left is not ready any more: their readiness must
+      // not keep counting (or keep a stale name in the waiting list).
+      _guestReadiness.remove(event.senderId);
       // A host that leaves without a `bye` (crashed app, killed network)
       // still ends the shared session for the guest — and the room status
       // must say so instead of keeping the last "Host is playing".
@@ -2669,16 +3006,49 @@ class TogetherService extends ChangeNotifier {
     // guest's player drifted while the relay was down, and the hook must
     // re-apply the state (and the host-gone flag must clear) instead of
     // waiting for the next tick or the next host action.
+    //
+    // 2.13.0 — the re-delivered anchor APPLIES, it is not just a flag
+    // clear: the old branch returned after clearing `hostGone` without
+    // touching `_roomState` / `_roomStatus`, so a play flip that
+    // happened while the guest was away stayed invisible until the
+    // host's next publish — and a paused host publishes nothing at all.
+    // Replay means replay: same content, applied again ([_applyState]).
     if (state.sequence <= _lastSeenSequence) {
       if (_resyncOnNextState) {
         _resyncOnNextState = false;
-        _clearHostGone();
+        _applyState(state);
+        // The resync itself is the event, even when the content is
+        // identical: the guest just reconnected, and the hook must
+        // re-evaluate the anchor (its player drifted while the relay
+        // was down). [_applyState] notifies only on changes, so the
+        // re-sync notification is made here, unconditionally.
         notifyListeners();
       }
       return;
     }
     _lastSeenSequence = state.sequence;
+    _applyState(state);
+  }
+
+  /// Applies one accepted (or re-delivered) host state: the anchor, in
+  /// full. The retained state is the single source of truth for the
+  /// title, the position, the transport — and, while live, for the
+  /// room status the screens show. A status or heartbeat that arrives
+  /// later with an older stamp cannot overwrite it (see [_handleStatus]
+  /// / [_handleHeartbeat]).
+  void _applyState(TogetherRoomState state) {
     _lastStateReceivedAtMs = DateTime.now().millisecondsSinceEpoch;
+    _lastStateHostTimestampMs = state.hostTimestampMs;
+    // The state does NOT sample the clock offset (2.13.0): its stamp
+    // can be arbitrarily old — a retained anchor re-delivered on
+    // reconnect, a late joiner landing on a live room — and an old
+    // stamp read as clock skew poisons the offset (a state stamped 5 s
+    // ago would read as a −5000 ms skew and collapse every projection
+    // to the anchor). Clock sync rides the heartbeat only (see
+    // [_handleHeartbeat]): stamped at send time, every second, so a
+    // sample is a fresh round trip, never message age. Until the first
+    // heartbeat calibrates it, the offset is 0 and the projection uses
+    // raw wall-clock age — right whenever the clocks agree.
     final wasWaiting = _phase == TogetherPhase.waitingGuest;
     // Notify only on something the UI can see: a phase change, a new title
     // (or a new source — the identity equality covers provider/source/URLs,
@@ -2701,7 +3071,14 @@ class TogetherService extends ChangeNotifier {
     // learn the host changed speed until the next tick that happens to
     // move the target enough. Speed is host state, not a local guess.
     final speedChanged = previous?.playbackSpeed != state.playbackSpeed;
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    // 2.13.0: a stall flip or a hold flip notifies too, for the same
+    // reason — the target slope and the transport both change without
+    // the instantaneous target moving.
+    final stalledChanged = previous?.stalled != state.stalled;
+    final heldChanged = previous?.held != state.held;
+    // The target is projected in the host's clock domain: the stamps are
+    // host wall-clock times, so "now" must be too.
+    final nowMs = hostClockNowMs();
     final targetMoved =
         previous != null &&
         (state.targetPositionMs(nowMs: nowMs) -
@@ -2726,10 +3103,13 @@ class TogetherService extends ChangeNotifier {
     }
     _notePeerPresent(state.hostId, TogetherRole.host.name);
     // The retained state is itself a status fact: a guest that missed the
-    // status push still learns playing/paused from it.
-    _roomStatus = state.playing
-        ? TogetherRoomStatus.hostPlaying
-        : TogetherRoomStatus.hostPaused;
+    // status push still learns playing/paused from it — and a held room
+    // says it is waiting, not paused.
+    _roomStatus = state.held
+        ? TogetherRoomStatus.hostWaitingGuests
+        : state.playing
+            ? TogetherRoomStatus.hostPlaying
+            : TogetherRoomStatus.hostPaused;
     // A state proves the host is here — a host that was marked gone by
     // the silence timer (or a `bye` from a previous incarnation) is back
     // the moment its state arrives.
@@ -2746,10 +3126,40 @@ class TogetherService extends ChangeNotifier {
         mediaChanged ||
         playingFlipped ||
         speedChanged ||
+        stalledChanged ||
+        heldChanged ||
         targetMoved ||
         hostBack) {
       notifyListeners();
     }
+  }
+
+  /// Folds one host-clock sample into the clock-offset estimate
+  /// (2.13.0, NTP-style after Bilibili-Sync / SyncStream / Jellyfin).
+  ///
+  /// `offset = (hostSentAt − receivedAt) + RTT/2`: the host stamped the
+  /// message at `hostTimestampMs` on its own clock, it arrived here at
+  /// `receivedAtMs` on ours, and the one-way delay is about half the
+  /// measured round-trip to the same broker. Smoothed with an EMA of
+  /// 0.3 and only re-applied on moves over 100 ms (Bilibili's numbers);
+  /// a sample further than 10 minutes out is nonsense, not an offset,
+  /// and is ignored. Until the first sample the offset is uncalibrated
+  /// and [hostClockNowMs] is just the wall clock (the clock gate).
+  void _updateClockOffset({
+    required int hostTimestampMs,
+    required int receivedAtMs,
+  }) {
+    final rtt = _roundTripMs;
+    final sample =
+        hostTimestampMs - receivedAtMs + (rtt == null ? 0 : (rtt / 2).round());
+    if (sample.abs() > 600000) return;
+    if (!_clockOffsetReady) {
+      _clockOffsetMs = sample.toDouble();
+      _clockOffsetReady = true;
+      return;
+    }
+    if ((sample - _clockOffsetMs).abs() < 100) return;
+    _clockOffsetMs = _clockOffsetMs * 0.7 + sample * 0.3;
   }
 
   void _handleChat(Map<String, dynamic> json) {
@@ -2761,6 +3171,10 @@ class TogetherService extends ChangeNotifier {
     }
     if (message.id.isEmpty) return;
     if (_messages.any((m) => m.id == message.id)) return;
+    // Text only (2.13.0 — image sending was removed): a payload with no
+    // text can only be a photo from a client that predates the removal,
+    // and it must never land as an empty bubble.
+    if (message.text == null || message.text!.isEmpty) return;
     // Rendered as "Friend": the other phone has no name, and the label is
     // decided here, not trusted from the wire. The sender's identity
     // (typed guest name / host role) IS trusted from the wire: it is what
@@ -2771,7 +3185,6 @@ class TogetherService extends ChangeNotifier {
       senderId: message.senderId,
       senderLabel: 'Friend',
       text: message.text,
-      imageBase64: message.imageBase64,
       replyToId: message.replyToId,
       replyToText: message.replyToText,
       timestampMs: message.timestampMs,
@@ -2781,204 +3194,6 @@ class TogetherService extends ChangeNotifier {
     _messages.add(inbound);
     if (!_chatPanelOpen) _chatHasUnread = true;
     notifyListeners();
-  }
-
-  // ---- Chunked chat images (receive side) ----
-
-  /// One incoming chunk of a photo. Chunks may arrive out of order and
-  /// twice (QoS 1); the reassembler dedupes by index and the photo is
-  /// delivered only when every chunk is in AND the SHA-256 matches — a
-  /// partial or corrupt transfer is never shown. When the last chunk
-  /// arrives with pieces still missing, the missing indices are requested
-  /// at once instead of waiting for the retry timer; the timer (5 s after
-  /// the last chunk seen) covers the case where the last chunk itself
-  /// never arrives.
-  void _handleImageChunk(Map<String, dynamic> json) {
-    TogetherImageChunk chunk;
-    try {
-      chunk = TogetherImageChunk.fromJson(json);
-    } catch (_) {
-      return;
-    }
-    if (chunk.messageId.isEmpty ||
-        chunk.senderId.isEmpty ||
-        chunk.senderId == clientId) {
-      return;
-    }
-    if (chunk.totalChunks <= 0 ||
-        chunk.totalBytes <= 0 ||
-        chunk.totalBytes > kTogetherMaxChatImageBytes ||
-        chunk.sha256Hex.isEmpty) {
-      return;
-    }
-    // Already delivered (the sender's retry re-publish racing the ack).
-    if (_messages.any((m) => m.id == chunk.messageId)) return;
-    var transfer = _incomingImages[chunk.messageId];
-    transfer ??= _incomingImages[chunk.messageId] = _IncomingImageTransfer(
-      reassembler: TogetherImageReassembler(
-        messageId: chunk.messageId,
-        totalChunks: chunk.totalChunks,
-        totalBytes: chunk.totalBytes,
-        sha256Hex: chunk.sha256Hex,
-      ),
-      senderId: chunk.senderId,
-      timestampMs: chunk.timestampMs,
-      replyToId: chunk.replyToId,
-      replyToText: chunk.replyToText,
-    );
-    // A chunk that disagrees with the transfer's announced shape is a
-    // different send reusing an id — drop it, never mix two photos.
-    if (transfer.reassembler.totalChunks != chunk.totalChunks ||
-        transfer.reassembler.totalBytes != chunk.totalBytes) {
-      return;
-    }
-    transfer.reassembler.addChunk(chunk);
-    _armImageRetryTimer(transfer);
-    final assembled = transfer.reassembler.tryAssemble();
-    if (assembled != null) {
-      _completeIncomingImage(transfer, assembled);
-      return;
-    }
-    // Receiving progress, throttled to 5% steps so a 160-chunk photo
-    // does not rebuild the chat panel 160 times.
-    final progress =
-        transfer.reassembler.receivedCount / transfer.reassembler.totalChunks;
-    if (progress - transfer.lastNotifiedProgress >= 0.05) {
-      transfer.lastNotifiedProgress = progress;
-      notifyListeners();
-    }
-    if (chunk.chunkIndex == chunk.totalChunks - 1) {
-      _requestMissingImageChunks(transfer);
-    }
-  }
-
-  /// Delivers a fully reassembled, integrity-checked photo as a normal
-  /// chat message, and acks it so the sender drops its retained copy.
-  void _completeIncomingImage(
-    _IncomingImageTransfer transfer,
-    Uint8List bytes,
-  ) {
-    transfer.retryTimer?.cancel();
-    _incomingImages.remove(transfer.reassembler.messageId);
-    final sender = _presentMembers[transfer.senderId];
-    final message = TogetherChatMessage(
-      id: transfer.reassembler.messageId,
-      senderId: transfer.senderId,
-      senderLabel: 'Friend',
-      imageBase64: base64Encode(bytes),
-      replyToId: transfer.replyToId,
-      replyToText: transfer.replyToText,
-      timestampMs: transfer.timestampMs,
-      // 2.11.0: a photo is a message too — it carries the sender's name /
-      // role like a text one, so the bubble shows who sent it.
-      senderName: sender?.displayName,
-      senderRole: sender?.role,
-    );
-    _messages.add(message);
-    if (!_chatPanelOpen) _chatHasUnread = true;
-    _publishToRoom(<String, dynamic>{
-      'kind': 'chat-image-ack',
-      'messageId': message.id,
-      'senderId': clientId,
-      'timestampMs': DateTime.now().millisecondsSinceEpoch,
-    });
-    notifyListeners();
-  }
-
-  /// Gives up on a photo after 3 unanswered retry requests (~15–20 s):
-  /// the transfer is dropped and the room sees an honest line instead of
-  /// a photo that never arrives.
-  void _failIncomingImage(_IncomingImageTransfer transfer) {
-    transfer.retryTimer?.cancel();
-    _incomingImages.remove(transfer.reassembler.messageId);
-    final sender = _presentMembers[transfer.senderId];
-    _messages.add(
-      TogetherChatMessage(
-        id: '${transfer.reassembler.messageId}-failed',
-        senderId: transfer.senderId,
-        senderLabel: 'Friend',
-        text: 'Photo couldn’t be received completely — please send it again.',
-        timestampMs: DateTime.now().millisecondsSinceEpoch,
-        senderName: sender?.displayName,
-        senderRole: sender?.role,
-      ),
-    );
-    if (!_chatPanelOpen) _chatHasUnread = true;
-    notifyListeners();
-  }
-
-  /// Arms (or re-arms) the 5 s retry timer: 5 s after the last chunk seen
-  /// with pieces still missing, ask for them. Re-armed on every chunk,
-  /// so a slow-but-moving transfer is never asked twice for the same gap.
-  void _armImageRetryTimer(_IncomingImageTransfer transfer) {
-    transfer.retryTimer?.cancel();
-    transfer.retryTimer = Timer(const Duration(seconds: 5), () {
-      if (_disposed) return;
-      if (!_incomingImages.containsKey(transfer.reassembler.messageId)) {
-        return;
-      }
-      if (transfer.reassembler.isComplete) return;
-      _requestMissingImageChunks(transfer);
-      if (_incomingImages.containsKey(transfer.reassembler.messageId)) {
-        _armImageRetryTimer(transfer);
-      }
-    });
-  }
-
-  /// Asks the sender to re-publish just the missing indices (at most
-  /// 3 requests per transfer — after that [_failIncomingImage] ends it).
-  void _requestMissingImageChunks(_IncomingImageTransfer transfer) {
-    final missing = transfer.reassembler.missingIndices;
-    if (missing.isEmpty) return;
-    if (transfer.requestsSent >= 3) {
-      _failIncomingImage(transfer);
-      return;
-    }
-    transfer.requestsSent += 1;
-    _publishToRoom(<String, dynamic>{
-      'kind': 'chat-image-request',
-      'messageId': transfer.reassembler.messageId,
-      'senderId': clientId,
-      'missing': missing,
-      'timestampMs': DateTime.now().millisecondsSinceEpoch,
-    });
-  }
-
-  /// The peer is missing pieces of a photo this phone sent: re-publish
-  /// exactly those chunks from the retained copy — never the whole image.
-  /// Paced like the initial send ([kTogetherChatChunkPublishGap]): a
-  /// burst of re-published chunks hits the same relay burst-loss.
-  Future<void> _handleImageRequest(Map<String, dynamic> json) async {
-    final messageId = json['messageId'] as String?;
-    final senderId = json['senderId'] as String?;
-    if (messageId == null ||
-        messageId.isEmpty ||
-        senderId == null ||
-        senderId == clientId) {
-      return;
-    }
-    final sent = _sentImages[messageId];
-    if (sent == null) return;
-    _pruneSentImages();
-    final missing =
-        (json['missing'] as List?)
-            ?.map((e) => (e as num).toInt())
-            .where((i) => i >= 0 && i < sent.chunks.length)
-            .toList() ??
-        const <int>[];
-    for (var i = 0; i < missing.length; i++) {
-      _publishToRoom(sent.chunks[missing[i]].toJson());
-      if (i < missing.length - 1 && debugPublishSinkForTest == null) {
-        await Future<void>.delayed(kTogetherChatChunkPublishGap);
-      }
-    }
-  }
-
-  /// The peer finished a photo: drop the retained chunk list.
-  void _handleImageAck(Map<String, dynamic> json) {
-    final messageId = json['messageId'] as String?;
-    if (messageId == null) return;
-    _sentImages.remove(messageId);
   }
 
   void _handleHeartbeat(Map<String, dynamic> json) {
@@ -3051,13 +3266,39 @@ class TogetherService extends ChangeNotifier {
     if (_role == TogetherRole.host && _adoptingRejoin) {
       _adoptRejoinFromHeartbeats();
     }
+    // A guest the host only learns about from heartbeats is still a
+    // guest for the hold bound: arm it once one is in the room.
+    if (_role == TogetherRole.host) _armHoldTimerIfGuestsPresent();
     // Any traffic from the host proves it is still there.
     if (_role == TogetherRole.guest) {
       // The host's heartbeat repeats its current status (and picked title)
       // so a guest that missed the status push still learns it within 1 s.
+      // 2.13.0 — same freshness rule as [_handleStatus] (Bug 2): while
+      // live with a retained state in hand, a heartbeat stamped
+      // at-or-before the state's host stamp is older news about
+      // play/pause — the 1 s heartbeat re-asserting a pre-resume status
+      // is what pinned the guest on "Host paused" while the host played.
+      // The heartbeat still calibrates the clock offset and still proves
+      // the host is here.
+      final heartbeatTs = (json['timestampMs'] as num?)?.toInt();
+      if (heartbeatTs != null && role == TogetherRole.host.name) {
+        _updateClockOffset(
+          hostTimestampMs: heartbeatTs,
+          receivedAtMs: now,
+        );
+      }
       var changed = _clearHostGone();
       final status = TogetherRoomStatus.fromWire(json['status'] as String?);
-      if (status != null && status != _roomStatus) {
+      final stateStamp = _lastStateHostTimestampMs;
+      final heartbeatIsStalePlayPause =
+          _phase == TogetherPhase.live &&
+          _roomState != null &&
+          stateStamp != null &&
+          heartbeatTs != null &&
+          heartbeatTs <= stateStamp;
+      if (status != null &&
+          status != _roomStatus &&
+          !heartbeatIsStalePlayPause) {
         _roomStatus = status;
         changed = true;
       }
@@ -3085,6 +3326,11 @@ class TogetherService extends ChangeNotifier {
 
   void _handleBye(Map<String, dynamic> json) {
     final senderId = json['senderId'] as String?;
+    // A guest saying goodbye is not ready any more, whatever else the
+    // bye means for the room.
+    if (senderId != null && _role == TogetherRole.host) {
+      _guestReadiness.remove(senderId);
+    }
     // Only the host leaving ends the shared session. A guest leaving
     // changes nothing for the host. The host is recognised by the id
     // learned from state / status / presence — not only by the retained
@@ -3231,54 +3477,36 @@ class TogetherService extends ChangeNotifier {
     _persistTimer?.cancel();
     _reconnectTimer?.cancel();
     _waitingStaleTimer?.cancel();
-    for (final transfer in _incomingImages.values) {
-      transfer.retryTimer?.cancel();
-    }
-    _incomingImages.clear();
+    _holdTimer?.cancel();
     _disconnect();
     super.dispose();
   }
 }
 
-/// One photo arriving in chunks: the reassembler plus the bookkeeping
-/// around it (who sent it, how many retries have been asked for, the
-/// 5 s retry timer, and where the progress bar last stopped so the UI
-/// is not rebuilt per chunk).
-class _IncomingImageTransfer {
-  _IncomingImageTransfer({
-    required this.reassembler,
-    required this.senderId,
-    required this.timestampMs,
-    this.replyToId,
-    this.replyToText,
+/// One guest's latest readiness report, as the host remembers it
+/// (2.13.0 wait-together barrier).
+class _GuestReadyEntry {
+  const _GuestReadyEntry({
+    required this.ready,
+    this.displayName,
+    this.titleKey,
+    this.note,
+    required this.updatedAtMs,
   });
 
-  final TogetherImageReassembler reassembler;
-  final String senderId;
-  final int timestampMs;
-  final String? replyToId;
-  final String? replyToText;
+  /// True when the guest's player is open on the live title.
+  final bool ready;
 
-  /// Retry requests sent so far (max 3, then the transfer fails).
-  int requestsSent = 0;
+  /// The guest's typed name, for the host's waiting list.
+  final String? displayName;
 
-  /// Fires 5 s after the last chunk seen; re-armed on every chunk.
-  Timer? retryTimer;
+  /// The open key of the title the guest's player opened, or null from
+  /// an older client.
+  final String? titleKey;
 
-  /// Last progress fraction the UI was told about (5% throttle).
-  double lastNotifiedProgress = 0;
-}
+  /// Why the guest could not open the title, when [ready] is false.
+  final String? note;
 
-/// One photo this phone sent: the chunk list, kept until the peer acks
-/// (or 2 minutes pass) so missing chunks can be re-published on request.
-class _SentImageTransfer {
-  _SentImageTransfer({
-    required this.messageId,
-    required this.chunks,
-    required this.sentAt,
-  });
-
-  final String messageId;
-  final List<TogetherImageChunk> chunks;
-  final DateTime sentAt;
+  /// Wall-clock milliseconds when the report arrived.
+  final int updatedAtMs;
 }

@@ -3996,6 +3996,35 @@ class _VlcPlayerScreenState extends ConsumerState<VlcPlayerScreen>
                     ),
                   ),
                 ),
+              // 2.13.0 wait-together hold, above the controls pill: the
+              // host sees who is still loading ("Waiting for Sonali to
+              // join playback…"), and the guest sees the room is waiting
+              // for everyone to be ready. The hold is the reason the
+              // player is paused here — not a stall, not a failure.
+              if (_togetherHook?.service.hostPlaybackHeld ?? false)
+                Align(
+                  alignment: Alignment.topCenter,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: IgnorePointer(
+                      child: _statusPill(
+                        _togetherHook!.service.holdWaitingLabel,
+                      ),
+                    ),
+                  ),
+                ),
+              if (_togetherHook?.service.guestPlaybackHeld ?? false)
+                Align(
+                  alignment: Alignment.topCenter,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: IgnorePointer(
+                      child: _statusPill(
+                        'Waiting for everyone to be ready…',
+                      ),
+                    ),
+                  ),
+                ),
               if (_togetherChatOpen && _togetherHook != null)
                 TogetherChatPanel(
                   service: _togetherHook!.service,

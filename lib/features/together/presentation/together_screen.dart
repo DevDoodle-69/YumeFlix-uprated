@@ -652,6 +652,31 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
                   fontSize: 12,
                 ),
               ),
+              // 2.13.0 — wait-together hold, host side: who is still
+              // loading, and (after the 20 s bound) the short line that
+              // the host can start anyway.
+              if (isHost && service.hostPlaybackHeld) ...[
+                const SizedBox(height: 4),
+                Text(
+                  service.holdWaitingLabel,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+              if (isHost && service.holdNotice != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  service.holdNotice!,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
               const SizedBox(height: 4),
               Text(
                 service.presenceLabel,
@@ -670,22 +695,58 @@ class _TogetherScreenState extends ConsumerState<TogetherScreen> {
               ),
               if (!isHost && service.roomState != null) ...[
                 const SizedBox(height: 14),
-                // 2.11.0 auto-open: while the title is resolving the guest
-                // sees "Opening…"; if it could not open, the honest line
-                // with the manual "Find this title" fallback — never a
-                // silent stuck screen. The button stays as the fallback
-                // even when auto-open worked, for a guest who backed out
-                // of the player and wants back in.
+                // 2.13.0 Enter button: prominent, full-width, always
+                // visible while the host is live (playing or paused) —
+                // the guest never has to hunt for it, and it works even
+                // when auto-open stalled or failed: it runs the SAME
+                // open path auto-open uses (same title, same provider,
+                // host's current live position). While an open is in
+                // flight it shows the loading state and stays disabled;
+                // after a failure it stays available for retry.
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: service.guestAutoOpenPending
+                        ? null
+                        : () => service.requestGuestEnter(),
+                    icon: const Icon(Icons.play_arrow_rounded),
+                    label: Text(
+                      service.guestAutoOpenPending
+                          ? 'Opening…'
+                          : 'Enter — Watch Together',
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                // 2.13.0 auto-open: while the title is resolving the
+                // guest sees real progress (finding the title / getting
+                // the stream / opening the player) plus the diagnostics
+                // line — never a silent stuck screen. If it could not
+                // open, the honest line stays up next to the Enter
+                // button, and "Find this title" remains only as the
+                // last-resort manual search.
                 if (service.guestAutoOpenPending)
-                  const Text(
-                    'Opening the host’s title…',
+                  Text(
+                    service.guestAutoOpenProgress ??
+                        'Opening the host’s title…',
                     textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 12),
+                    style: const TextStyle(fontSize: 12),
                   )
                 else if (service.guestAutoOpenFailure != null) ...[
                   Text(
                     service.guestAutoOpenFailure!,
                     textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                if (service.guestAutoOpenDiagnostics != null) ...[
+                  Text(
+                    service.guestAutoOpenDiagnostics!,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      fontSize: 12,
+                    ),
                   ),
                   const SizedBox(height: 10),
                 ],

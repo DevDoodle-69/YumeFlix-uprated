@@ -73,6 +73,9 @@ void main() {
 
   void goLive(TogetherService service) {
     service.goLive(positionMs: 1000, durationMs: 600000, playing: true);
+    // 2.13.0: Start holds until the first guest is ready — release it,
+    // so these tests exercise a live-playing room as before.
+    service.debugGuestReadyForTest();
   }
 
   String statePayload({

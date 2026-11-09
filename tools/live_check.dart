@@ -12,29 +12,21 @@
 //      with useWebSocket silently turns the websocket off — the 2.6.0 bug
 //      that made Together fail on every network with a "check internet"
 //      error). Relays are tried in the app's order: EMQX, then Mosquitto.
-//   2. Together chunked chat image (2.8.0, `_checkTogetherChunkedImage`
-//      — one clearly-marked function, self-contained): a real ~1 MB image
-//      round-trips over the live broker as 32 KiB chunks and reassembles
-//      byte-exact with its SHA-256 intact, including an out-of-order
-//      chunk and a duplicate. Chunks are sent paced (250 ms gaps — the
-//      public relay drops rapid bursts) and, if any are still missing,
-//      the guest asks for exactly those indices and the host re-publishes
-//      just them, up to 3 retry rounds — the same protocol the app runs.
-//   3. Discord poster chain for "Harry Potter and the Deathly Hallows:
+//   2. Discord poster chain for "Harry Potter and the Deathly Hallows:
 //      Part 2" (IMDb tt1201607): keyless Cinemeta lookup returns a poster
 //      URL, and that URL (plus the metahub extension poster) really
 //      fetches HTTP 200 as an image. The built Gateway activity payload
 //      must then carry a valid https `large_image` — and never a dead
 //      asset key (the 2.6.0 black-circle cause).
-//   4. MovieSubLK provider live: a real search for "Aquaman" returns
+//   3. MovieSubLK provider live: a real search for "Aquaman" returns
 //      results with https thumbnails, and a real detail fetch returns an
 //      https poster that fetches HTTP 200 as an image.
-//   5. Discord poster chain for a SERIES, "Dexter: Resurrection" (IMDb
+//   4. Discord poster chain for a SERIES, "Dexter: Resurrection" (IMDb
 //      tt33043892): the keyless Cinemeta lookup works by series id AND by
 //      exact title search (the no-ImdbId path), the episode still and the
 //      poster fetch as images, and the built activity carries a valid
 //      https `large_image` with the correct "S1 E1" series title.
-//   6. Together start flow over the live broker: room created, guest sees
+//   5. Together start flow over the live broker: room created, guest sees
 //      the host browsing with NO go-live state yet, then the host going
 //      live publishes a retained playing state the guest receives, and a
 //      title change re-shares the new title at position 0. (2.9.0: the
@@ -43,7 +35,7 @@
 //      series episode's state carries the exact `· S1 E1` title and label,
 //      so the guest opens the same title the host started.)
 //
-//   7. In-app updates (2.11.0, `_checkLatestRelease`): the public latest-
+//   6. In-app updates (2.11.0, `_checkLatestRelease`): the public latest-
 //      release API answers, its tag parses as a plain release version, and
 //      it carries a universal APK asset (the exact
 //      `yumeflix-android-universal-vX.Y.Z.apk` name, or any `.apk` with
@@ -61,7 +53,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-import 'package:crypto/crypto.dart';
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 
@@ -414,246 +405,6 @@ Future<void> _checkTogether() async {
   try {
     guest.disconnect();
   } catch (_) {}
-}
-
-/// [2.8.0 — Together chunked chat image, ONE self-contained function]
-/// A real ~1 MB image round-trips over the live broker the way the app
-/// sends it (see lib/features/together/chat_image_chunks.dart): split
-/// into 32 KiB chunks on the room topic, reassembled by the guest and
-/// verified byte-exact with SHA-256. The chunks go out out of order with
-/// one duplicate, because the relay (QoS 1) owes the app neither order
-/// nor exactly-once delivery. If any chunk is lost or corrupted, the
-/// reassembly check fails here — exactly as the app refuses to show a
-/// partial photo. Deliberately duplicated here instead of importing the
-/// app's chunk module: this script runs standalone with `dart
-/// tools/live_check.dart` and must keep working even if the app's chunk
-/// shape changes (a drift between the two is itself a failure to fix).
-Future<void> _checkTogetherChunkedImage() async {
-  print('[2/6] Together chunked chat image — ~1 MB over the live broker');
-  const imageBytes = 1024 * 1024;
-  const chunkBytes = 32 * 1024;
-  final otp = (100000 + Random().nextInt(900000)).toString();
-  final topic = 'yumeflix/together/v1/$otp';
-  const messageId = 'livecheck-img-1';
-  final senderId = 'livecheck-img-host-${Random().nextInt(1 << 30)}';
-  final guestId = 'livecheck-img-guest-${Random().nextInt(1 << 30)}';
-
-  // ~1 MB of incompressible bytes: a real photo's size class, without
-  // depending on any image file on disk.
-  final random = Random(1234);
-  final original = List<int>.generate(imageBytes, (_) => random.nextInt(256));
-  final checksum = sha256.convert(original).toString();
-  final totalChunks = (imageBytes + chunkBytes - 1) ~/ chunkBytes;
-
-  MqttServerClient? guest;
-  MqttServerClient? host;
-  String? relayLabel;
-  for (final relay in const [
-    ('wss://broker.emqx.io/mqtt', 8084, 'EMQX'),
-    ('wss://test.mosquitto.org/mqtt', 8081, 'Mosquitto'),
-  ]) {
-    guest = await _connectRelay(relay.$1, relay.$2, relay.$3, guestId);
-    if (guest != null) {
-      relayLabel = relay.$3;
-      break;
-    }
-  }
-  _check('guest connects to a Together relay', guest != null);
-  if (guest == null) {
-    _failed++;
-    print('  FAIL  chunked image round-trip skipped — no relay reachable');
-    return;
-  }
-  host = await _connectRelay(
-    relayLabel == 'EMQX'
-        ? 'wss://broker.emqx.io/mqtt'
-        : 'wss://test.mosquitto.org/mqtt',
-    relayLabel == 'EMQX' ? 8084 : 8081,
-    relayLabel!,
-    senderId,
-  );
-  _check('host connects to the same relay ($relayLabel)', host != null);
-  if (host == null) {
-    guest.disconnect();
-    return;
-  }
-
-  try {
-    final received = <int, List<int>>{};
-    final complete = Completer<void>();
-    guest.subscribe(topic, MqttQos.atLeastOnce);
-    guest.updates!.listen((events) {
-      for (final event in events) {
-        final payload = event.payload as MqttPublishMessage;
-        final text = MqttPublishPayload.bytesToStringAsString(
-          payload.payload.message,
-        );
-        try {
-          final decoded = jsonDecode(text);
-          if (decoded is! Map<String, dynamic>) continue;
-          if (decoded['kind'] != 'chat-image-chunk') continue;
-          if (decoded['messageId'] != messageId) continue;
-          final index = (decoded['chunkIndex'] as num?)?.toInt();
-          final data = decoded['data'] as String?;
-          if (index == null || data == null) continue;
-          // A duplicate (QoS 1) overwrites identical bytes: harmless.
-          received[index] = base64Decode(data);
-          if (received.length == totalChunks && !complete.isCompleted) {
-            complete.complete();
-          }
-        } catch (_) {}
-      }
-    });
-    await Future<void>.delayed(const Duration(seconds: 1));
-    final sentAt = DateTime.now();
-
-    // One paced publish of a list of chunk indices, with the same 250 ms
-    // gap the app uses (see kTogetherChatChunkPublishGap in
-    // lib/features/together/chat_image_chunks.dart): the public relay
-    // drops rapid bursts — measured 2026-11-07, 32 chunks at 20 ms or
-    // 100 ms gaps lost ~40–70% of the burst (identical loss on two
-    // independent receivers, so broker-side), while 200/250/500 ms gaps
-    // all delivered 32/32 first-pass. Used for the initial send and for
-    // every retry round below.
-    //
-    // (Non-null alias: `host` is nullable and a closure cannot use its
-    // null-check promotion.)
-    final liveHost = host;
-    Future<void> publishChunks(List<int> indices) async {
-      for (var i = 0; i < indices.length; i++) {
-        final index = indices[i];
-        final start = index * chunkBytes;
-        var end = start + chunkBytes;
-        if (end > imageBytes) end = imageBytes;
-        _publish(liveHost, topic, {
-          'kind': 'chat-image-chunk',
-          'messageId': messageId,
-          'senderId': senderId,
-          'timestampMs': sentAt.millisecondsSinceEpoch,
-          'totalChunks': totalChunks,
-          'chunkIndex': index,
-          'totalBytes': imageBytes,
-          'sha256': checksum,
-          'data': base64Encode(original.sublist(start, end)),
-        });
-        if (i < indices.length - 1) {
-          await Future<void>.delayed(const Duration(milliseconds: 250));
-        }
-      }
-    }
-
-    // The host hears retry requests on the same topic (it is subscribed
-    // too) and re-publishes just the missing indices — the same protocol
-    // the app runs in TogetherService.
-    host.subscribe(topic, MqttQos.atLeastOnce);
-    host.updates!.listen((events) {
-      for (final event in events) {
-        final payload = event.payload as MqttPublishMessage;
-        final text = MqttPublishPayload.bytesToStringAsString(
-          payload.payload.message,
-        );
-        try {
-          final decoded = jsonDecode(text);
-          if (decoded is! Map<String, dynamic>) continue;
-          if (decoded['kind'] != 'chat-image-request') continue;
-          if (decoded['messageId'] != messageId) continue;
-          final missing = (decoded['missing'] as List?)
-              ?.map((e) => (e as num).toInt())
-              .where((i) => i >= 0 && i < totalChunks)
-              .toList();
-          if (missing == null || missing.isEmpty) continue;
-          unawaited(publishChunks(missing));
-        } catch (_) {}
-      }
-    });
-
-    // Out of order on purpose (last chunk first), plus a duplicate of
-    // chunk 0 at the end.
-    final order = <int>[
-      totalChunks - 1,
-      ...List<int>.generate(totalChunks - 1, (i) => i + 1),
-      0,
-      0, // duplicate
-    ];
-    await publishChunks(order);
-    _check(
-      'host published $totalChunks chunks (+1 duplicate, out of order)',
-      true,
-      '$imageBytes bytes in ${totalChunks}x32 KiB chunks, paced 250 ms',
-    );
-
-    bool allArrived = false;
-    try {
-      await complete.future.timeout(const Duration(seconds: 20));
-      allArrived = true;
-    } on TimeoutException {
-      allArrived = false;
-    }
-    // First pass not complete: run the app's retry protocol — the guest
-    // asks for exactly the missing indices, the host re-publishes just
-    // those, up to 3 rounds like TogetherService.
-    var retryRounds = 0;
-    for (var round = 1; round <= 3 && !allArrived; round++) {
-      retryRounds = round;
-      final missing = List<int>.generate(totalChunks, (i) => i)
-          .where((i) => !received.containsKey(i))
-          .toList();
-      print(
-        '  retry round $round: guest asks for ${missing.length} missing '
-        'chunks',
-      );
-      _publish(guest, topic, {
-        'kind': 'chat-image-request',
-        'messageId': messageId,
-        'senderId': guestId,
-        'missing': missing,
-        'timestampMs': DateTime.now().millisecondsSinceEpoch,
-      });
-      try {
-        await complete.future.timeout(const Duration(seconds: 10));
-        allArrived = true;
-      } on TimeoutException {
-        allArrived = false;
-      }
-    }
-    _check(
-      'guest received every chunk',
-      allArrived,
-      allArrived
-          ? (retryRounds == 0
-                ? 'first pass, no retry needed'
-                : 'after $retryRounds retry round(s)')
-          : 'got ${received.length}/$totalChunks chunks',
-    );
-    if (allArrived) {
-      final reassembled = <int>[];
-      for (var i = 0; i < totalChunks; i++) {
-        reassembled.addAll(received[i]!);
-      }
-      _check(
-        'reassembled image is the same length',
-        reassembled.length == imageBytes,
-        'got ${reassembled.length} bytes',
-      );
-      _check(
-        'reassembled image matches the SHA-256 (byte-exact)',
-        sha256.convert(reassembled).toString() == checksum,
-      );
-      final elapsed = DateTime.now().difference(sentAt);
-      _check(
-        'round-trip finished in a reasonable time',
-        elapsed < const Duration(seconds: 90),
-        '${elapsed.inMilliseconds} ms for $totalChunks chunks',
-      );
-    }
-  } finally {
-    try {
-      host.disconnect();
-    } catch (_) {}
-    try {
-      guest.disconnect();
-    } catch (_) {}
-  }
 }
 
 Future<void> _checkDiscordPoster() async {
@@ -1498,13 +1249,6 @@ Future<void> main() async {
   } catch (e) {
     _failed++;
     print('  FAIL  Together round-trip threw: $e');
-  }
-  print('');
-  try {
-    await _checkTogetherChunkedImage();
-  } catch (e) {
-    _failed++;
-    print('  FAIL  Together chunked image threw: $e');
   }
   print('');
   try {

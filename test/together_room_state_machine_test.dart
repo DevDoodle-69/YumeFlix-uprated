@@ -99,6 +99,7 @@ void main() {
 
       // Started: Start publishes the live phase for the picked title.
       host.goLive(positionMs: 0, durationMs: 600000, playing: true);
+      host.debugGuestReadyForTest();
       expect(host.phase, TogetherPhase.live);
       expect(host.isLive, isTrue);
       expect(host.currentMedia, mediaA);

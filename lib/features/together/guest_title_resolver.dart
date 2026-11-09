@@ -38,13 +38,40 @@ import '../../core/utils/app_utils.dart';
 import 'models.dart';
 
 /// How long the guest gives the title search (tier 3) before giving up
-/// and showing the honest fallback. The search is progressive — a match
-/// ends it early — so this only bounds the no-match case.
-const Duration kGuestTitleSearchTimeout = Duration(seconds: 15);
+/// and showing the honest fallback. ABSOLUTE, not per-event (2.13.0):
+/// the old per-event `Stream.timeout` reset on every progressive batch,
+/// so a trickling search could run forever — now the search gets this
+/// budget from its first byte, however many batches arrive.
+const Duration kGuestTitleSearchTimeout = Duration(seconds: 30);
+
+/// How long the guest gives one detail load (tier 2) before treating it
+/// as unavailable and trying the next tier (2.13.0). Tier 2 used to
+/// await `loadDetails` with NO timeout at all — a hung provider call
+/// left the guest on "Opening…" forever, which is the stall the
+/// 2.12.0 live test showed. The JS engine itself caps an invoke at
+/// 90 s; 15 s is the guest-facing bound for one tier.
+const Duration kGuestDetailsTimeout = Duration(seconds: 15);
 
 /// How long the guest gives one stream list to load before treating it
 /// as unavailable and trying the next tier.
 const Duration kGuestStreamsTimeout = Duration(seconds: 20);
+
+/// Total budget for ONE resolution attempt (2.13.0): every tier await
+/// is cut at this deadline, so a resolution can never hang past it
+/// however many callbacks stall. The coordinator retries a failed
+/// attempt (see `guest_auto_open.dart`) instead of failing once — the
+/// guest's only outcomes are the player opening, or an honest message
+/// plus the Enter button.
+const Duration kGuestResolveTotalTimeout = Duration(seconds: 90);
+
+/// What step a guest auto-open is on, for the honest progress the
+/// guest sees while the title resolves (2.13.0) instead of a dead
+/// spinner: finding the title, getting the stream, opening the player.
+enum GuestResolveStep { findingTitle, gettingStream, openingPlayer }
+
+/// Progress callback for [resolveGuestTitle]: the step the resolution
+/// just reached. Steps only move forward within one attempt.
+typedef GuestResolveProgress = void Function(GuestResolveStep step);
 
 /// What the guest opens: the item, the episode, the token the player
 /// resolves streams from, and — when the guest pre-resolved them — the
@@ -90,11 +117,16 @@ class GuestTitleResolution {
 
 /// The guest could not open the host's title automatically. [message] is
 /// the short honest line the Together screen shows next to the manual
-/// "Find this title" fallback.
+/// "Find this title" fallback. [diagnostics] is the tier-by-tier reason
+/// (2.13.0) — which tier failed and why — shown in the diagnostics line
+/// so the next failure is diagnosable from the phone.
 class GuestTitleResolutionFailure implements Exception {
-  const GuestTitleResolutionFailure(this.message);
+  const GuestTitleResolutionFailure(this.message, {this.diagnostics});
 
   final String message;
+
+  /// Tier-by-tier failure reasons, or null when none was recorded.
+  final String? diagnostics;
 
   @override
   String toString() => 'GuestTitleResolutionFailure: $message';
@@ -153,14 +185,19 @@ Episode? pickEpisodeForIdentity(
 /// normalised title with a matching media type, preferring a TMDB-id
 /// match when the candidate carries one. Anything else is not the host's
 /// title — a near match must not open the wrong film.
+///
+/// 2.13.0 — a trailing release year on the candidate (`"The Garden of
+/// Words (2013)"`) still matches: providers commonly carry the year,
+/// and the year is not what distinguishes two films — the TMDB id does
+/// when both sides know it, and the exact title otherwise.
 MultimediaItem? pickSearchMatch(
   List<MultimediaItem> items,
   TogetherMediaIdentity identity,
 ) {
-  final wantTitle = normalizeTitle(baseTitleOf(identity));
+  final wantTitle = _matchTitle(baseTitleOf(identity));
   if (wantTitle.isEmpty) return null;
   final candidates = items.where((item) {
-    if (normalizeTitle(item.title) != wantTitle) return false;
+    if (_matchTitle(item.title) != wantTitle) return false;
     if (identity.tmdbType == 'movie' &&
         item.contentType != MultimediaContentType.movie) {
       return false;
@@ -181,6 +218,12 @@ MultimediaItem? pickSearchMatch(
   }
   return candidates.first;
 }
+
+/// Normalised title for matching: case and surrounding space ignored,
+/// inner runs of space collapsed, and a trailing release year
+/// (`" (2013)"`) stripped — the year is metadata, not identity.
+String _matchTitle(String title) =>
+    normalizeTitle(title).replaceFirst(RegExp(r' \(\d{4}\)$'), '');
 
 /// Orders a resolved stream list so the host's source opens first, when
 /// it is in the list at all. The rest keep their order as failover.
@@ -225,6 +268,22 @@ bool _isDirectToken(MultimediaItem item, String url) =>
 /// done. Every callback is allowed to fail: a failure just drops to the
 /// next tier, and only a failure of all three throws
 /// [GuestTitleResolutionFailure].
+///
+/// 2.13.0 — fast join + bounded + honest:
+/// * Tiers 1 and 2 run IN PARALLEL when both a token and a detail URL
+///   are known: the stream pre-resolve and the detail load overlap
+///   instead of waiting on each other serially. Tier 1 wins when it
+///   resolves; tier 2 is the fallback. Total time is the slower tier,
+///   not the sum.
+/// * Every tier is bounded: streams 20 s, details 15 s, search 30 s
+///   absolute — and the whole attempt is cut at
+///   [kGuestResolveTotalTimeout], so a resolution can never hang past
+///   it however many callbacks stall. A slow network (300–500 ms
+///   round-trips, different countries) is far inside every bound.
+/// * [onProgress] reports each step as it is reached, so the guest
+///   sees real progress instead of a dead spinner.
+/// * The failure carries [GuestTitleResolutionFailure.diagnostics]:
+///   which tier failed and why, for the diagnostics line.
 Future<GuestTitleResolution> resolveGuestTitle({
   required TogetherMediaIdentity identity,
   required Future<MultimediaItem?> Function(MultimediaItem baseItem)
@@ -236,10 +295,33 @@ Future<GuestTitleResolution> resolveGuestTitle({
   loadStreams,
   required Stream<List<MultimediaItem>> Function(String query) searchTitles,
   int startPositionMs = 0,
+  GuestResolveProgress? onProgress,
 }) async {
-  // Tier 1 — the exact token the host is playing.
+  final deadline = DateTime.now().add(kGuestResolveTotalTimeout);
+  final reasons = <String>[];
+  onProgress?.call(GuestResolveStep.findingTitle);
+
+  // Tier 1 — the exact token the host is playing — and tier 2 — the
+  // host's detail URL — start together (see above). Tier 2's future is
+  // only awaited when tier 1 cannot resolve; abandoning it is safe
+  // (its callbacks swallow their own failures, so it never throws
+  // unhandled).
   final episodeUrl = identity.episodeUrl;
-  if (episodeUrl != null && episodeUrl.isNotEmpty) {
+  final hasToken = episodeUrl != null && episodeUrl.isNotEmpty;
+  final hasItemUrl = identity.itemUrl != null && identity.itemUrl!.isNotEmpty;
+  Future<GuestTitleResolution?>? tier2Future;
+  if (hasItemUrl) {
+    tier2Future = _resolveFromItem(
+      buildItemForIdentity(identity),
+      identity,
+      loadDetails,
+      loadStreams,
+      startPositionMs: startPositionMs,
+      reasons: reasons,
+    );
+  }
+  if (hasToken) {
+    onProgress?.call(GuestResolveStep.gettingStream);
     final item = buildItemForIdentity(identity);
     final episode = Episode(
       name: identity.title,
@@ -247,48 +329,86 @@ Future<GuestTitleResolution> resolveGuestTitle({
       season: identity.season ?? 0,
       episode: identity.episode ?? 0,
     );
-    final resolved = await _resolveStreams(
-      item,
-      episode,
-      episodeUrl,
-      loadStreams,
-      identity.source,
-      startPositionMs: startPositionMs,
+    final resolved = await _withDeadline(
+      _resolveStreams(
+        item,
+        episode,
+        episodeUrl,
+        loadStreams,
+        identity.source,
+        startPositionMs: startPositionMs,
+        reasons: reasons,
+      ),
+      deadline,
     );
-    if (resolved != null) return resolved;
-  }
-
-  // Tier 2 — the host's detail URL: load it, pick the episode by number.
-  if (identity.itemUrl != null && identity.itemUrl!.isNotEmpty) {
-    final resolved = await _resolveFromItem(
-      buildItemForIdentity(identity),
-      identity,
-      loadDetails,
-      loadStreams,
-      startPositionMs: startPositionMs,
-    );
-    if (resolved != null) return resolved;
+    if (resolved != null) {
+      onProgress?.call(GuestResolveStep.openingPlayer);
+      return resolved;
+    }
+    if (tier2Future != null) {
+      final fromDetails = await _withDeadline(tier2Future, deadline);
+      if (fromDetails != null) {
+        onProgress?.call(GuestResolveStep.openingPlayer);
+        return fromDetails;
+      }
+    }
+  } else if (tier2Future != null) {
+    final fromDetails = await _withDeadline(tier2Future, deadline);
+    if (fromDetails != null) {
+      onProgress?.call(GuestResolveStep.openingPlayer);
+      return fromDetails;
+    }
   }
 
   // Tier 3 — title search, exact title (TMDB id preferred).
-  final match = await _searchForTitle(identity, searchTitles);
+  onProgress?.call(GuestResolveStep.findingTitle);
+  final match = await _searchForTitle(identity, searchTitles, deadline);
   if (match != null) {
-    final resolved = await _resolveFromItem(
-      match,
-      identity,
-      loadDetails,
-      loadStreams,
-      startPositionMs: startPositionMs,
+    onProgress?.call(GuestResolveStep.gettingStream);
+    final resolved = await _withDeadline(
+      _resolveFromItem(
+        match,
+        identity,
+        loadDetails,
+        loadStreams,
+        startPositionMs: startPositionMs,
+        reasons: reasons,
+      ),
+      deadline,
     );
-    if (resolved != null) return resolved;
+    if (resolved != null) {
+      onProgress?.call(GuestResolveStep.openingPlayer);
+      return resolved;
+    }
+  } else {
+    reasons.add(
+      'title search found no exact match for “${baseTitleOf(identity)}”',
+    );
   }
 
-  throw const GuestTitleResolutionFailure(kGuestTitleNotFoundMessage);
+  throw GuestTitleResolutionFailure(
+    kGuestTitleNotFoundMessage,
+    diagnostics: reasons.isEmpty ? null : reasons.join(' · '),
+  );
+}
+
+/// Awaits [future], cut at [deadline]: null when the deadline passes
+/// first. The underlying work is left running (its callbacks are
+/// self-bounding), but the caller never waits past the total budget.
+Future<T?> _withDeadline<T>(Future<T?> future, DateTime deadline) async {
+  final remaining = deadline.difference(DateTime.now());
+  if (remaining <= Duration.zero) return null;
+  try {
+    return await future.timeout(remaining);
+  } on TimeoutException {
+    return null;
+  }
 }
 
 /// Resolves one item (detail URL known) into a player opening: load its
 /// details, pick the episode, resolve its streams. Null when any step
-/// cannot — the caller then tries the next tier.
+/// cannot — the caller then tries the next tier. [reasons] collects
+/// why, for the failure diagnostics.
 Future<GuestTitleResolution?> _resolveFromItem(
   MultimediaItem item,
   TogetherMediaIdentity identity,
@@ -296,17 +416,33 @@ Future<GuestTitleResolution?> _resolveFromItem(
   Future<List<StreamResult>> Function(MultimediaItem item, String episodeUrl)
   loadStreams, {
   int startPositionMs = 0,
+  List<String>? reasons,
 }) async {
   MultimediaItem? detailed;
   try {
-    detailed = await loadDetails(item);
+    detailed = await loadDetails(
+      item,
+    ).timeout(kGuestDetailsTimeout);
+  } on TimeoutException {
+    reasons?.add(
+      'details load timed out after ${kGuestDetailsTimeout.inSeconds}s',
+    );
+    return null;
   } catch (_) {
+    reasons?.add('details load failed');
+    return null;
+  }
+  if (detailed == null && (item.episodes ?? const <Episode>[]).isEmpty) {
+    reasons?.add('details unavailable for “${baseTitleOf(identity)}”');
     return null;
   }
   final episodes =
       detailed?.episodes ?? item.episodes ?? const <Episode>[];
   final episode = pickEpisodeForIdentity(episodes, identity);
-  if (episode == null || episode.url.isEmpty) return null;
+  if (episode == null || episode.url.isEmpty) {
+    reasons?.add('details had no episode for this title');
+    return null;
+  }
   return _resolveStreams(
     detailed ?? item,
     episode,
@@ -314,33 +450,56 @@ Future<GuestTitleResolution?> _resolveFromItem(
     loadStreams,
     identity.source,
     startPositionMs: startPositionMs,
+    reasons: reasons,
   );
 }
 
 /// Searches for the host's title and returns the exact match, or null.
 /// Consumes the progressive batches until a match appears, the search
-/// completes, or the search times out.
+/// completes, or the ABSOLUTE search budget ([kGuestTitleSearchTimeout],
+/// capped by [deadline]) runs out — whichever comes first. A batch
+/// arriving late does not extend the budget.
 Future<MultimediaItem?> _searchForTitle(
   TogetherMediaIdentity identity,
   Stream<List<MultimediaItem>> Function(String query) searchTitles,
+  DateTime deadline,
 ) async {
   final query = baseTitleOf(identity);
   if (query.isEmpty) return null;
   final collected = <MultimediaItem>[];
+  final searchEnd = DateTime.now().add(kGuestTitleSearchTimeout);
+  final end = searchEnd.isBefore(deadline) ? searchEnd : deadline;
+  final remaining = end.difference(DateTime.now());
+  if (remaining <= Duration.zero) return pickSearchMatch(collected, identity);
+  final completer = Completer<MultimediaItem?>();
+  late StreamSubscription<List<MultimediaItem>> sub;
+  Timer? timer;
+  void finish(MultimediaItem? match) {
+    if (completer.isCompleted) return;
+    timer?.cancel();
+    unawaited(sub.cancel());
+    completer.complete(match);
+  }
+
   try {
-    await for (final batch in searchTitles(
-      query,
-    ).timeout(kGuestTitleSearchTimeout)) {
-      collected.addAll(batch);
-      final match = pickSearchMatch(collected, identity);
-      if (match != null) return match;
-    }
-  } on TimeoutException {
-    // No match in the time allowed: the caller falls through to the
-    // honest failure instead of waiting on a search that may never land.
+    timer = Timer(remaining, () {
+      finish(pickSearchMatch(collected, identity));
+    });
+    sub = searchTitles(query).listen(
+      (batch) {
+        collected.addAll(batch);
+        final match = pickSearchMatch(collected, identity);
+        if (match != null) finish(match);
+      },
+      onError: (_) => finish(pickSearchMatch(collected, identity)),
+      onDone: () => finish(pickSearchMatch(collected, identity)),
+      cancelOnError: false,
+    );
+  } catch (_) {
+    timer?.cancel();
     return pickSearchMatch(collected, identity);
   }
-  return pickSearchMatch(collected, identity);
+  return completer.future;
 }
 
 /// Resolves one episode token into a player opening: pre-loads its stream
@@ -357,6 +516,7 @@ Future<GuestTitleResolution?> _resolveStreams(
   loadStreams,
   String? hostSource, {
   int startPositionMs = 0,
+  List<String>? reasons,
 }) async {
   if (_isDirectToken(item, episodeUrl)) {
     return GuestTitleResolution(
@@ -369,10 +529,19 @@ Future<GuestTitleResolution?> _resolveStreams(
   List<StreamResult> streams;
   try {
     streams = await loadStreams(item, episodeUrl).timeout(kGuestStreamsTimeout);
+  } on TimeoutException {
+    reasons?.add(
+      'stream list timed out after ${kGuestStreamsTimeout.inSeconds}s',
+    );
+    return null;
   } catch (_) {
+    reasons?.add('stream list failed to load');
     return null;
   }
-  if (streams.isEmpty) return null;
+  if (streams.isEmpty) {
+    reasons?.add('stream list was empty for the host’s token');
+    return null;
+  }
   final ordered = orderStreamsForHostSource(streams, hostSource);
   final notice =
       hostSource != null &&

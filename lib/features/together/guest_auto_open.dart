@@ -20,6 +20,22 @@
 /// queueing behind it. "Zero latency" here means it feels instant, not a
 /// literal zero; no user-facing text claims otherwise.
 ///
+/// 2.13.0 — RELIABILITY OVER SPEED. Opening may take time, and the
+/// guest must never sit on a dead spinner again:
+/// * the resolution is BOUNDED (per-tier timeouts + a total cap in the
+///   resolver) and RETRIED: a failed attempt is retried up to
+///   [kGuestAutoOpenMaxAttempts] times before the honest failure shows,
+///   and the guest sees real progress (finding the title / getting the
+///   stream / opening the player) plus diagnostics (what was received,
+///   which tier failed and why) the whole time;
+/// * the guest's only two outcomes are the player opening, or a clear
+///   message plus the Enter button — never an infinite "Opening…" and
+///   never a dead end after one failure;
+/// * every open (auto or manual Enter) REPORTS readiness to the host
+///   (`guest-ready`): the host's wait-together hold releases on the
+///   first ready guest, and a final failure reports not-ready so the
+///   host knows that guest is stuck instead of waiting blind.
+///
 /// DEDUPE. One player, ever: an open is keyed by title + source + episode
 /// token ([guestAutoOpenKey]); a duplicate go-live, a rejoin, or a
 /// re-publish of the same title is the same key and does nothing, and a
@@ -69,18 +85,23 @@ enum GuestAutoOpenAction {
   closeToTogether,
 }
 
-/// The open key for a live title: TMDB id, base title, episode label,
-/// source label and episode token. Two states with the same key are the
-/// same open — a re-publish, a duplicate go-live, a rejoin. Anything that
-/// changes the key (a new title, a new episode, a host source pick, a new
-/// episode token) is a new open.
-String guestAutoOpenKey(TogetherMediaIdentity media) => <String>[
-  media.tmdbId?.toString() ?? '',
-  baseTitleOf(media),
-  media.episodeLabel ?? '',
-  media.source ?? '',
-  media.episodeUrl ?? '',
-].join('|');
+/// How many times the coordinator tries to open a live title before
+/// giving up with the honest failure + Enter button (2.13.0). A single
+/// failure is never the end: a slow provider, a dead source or a
+/// trickling search gets retried, and the guest sees the attempt count
+/// in the progress line.
+const int kGuestAutoOpenMaxAttempts = 3;
+
+/// Pause between auto-open attempts (2.13.0): long enough for a
+/// flapping provider to recover, short enough that the retry still
+/// feels like one continuous open.
+const Duration kGuestAutoOpenRetryDelay = Duration(seconds: 1);
+
+/// The open key for a live title — see [togetherTitleKey] in
+/// `models.dart`, the shared definition the wait-together readiness
+/// check uses too, so both agree on what "the same title" means.
+String guestAutoOpenKey(TogetherMediaIdentity media) =>
+    togetherTitleKey(media);
 
 /// The pure decision: given the room as it stands, what should the
 /// coordinator do? No navigation, no resolution, no side effects — the
@@ -161,6 +182,11 @@ class _TogetherGuestAutoOpenState extends ConsumerState<TogetherGuestAutoOpen>
   /// The key the guest backed out of, or null. Only the exact key is
   /// suppressed — a new title still auto-opens.
   String? _optedOutKey;
+
+  /// Last manual "Enter — Watch Together" request id handled (2.13.0).
+  /// The service counter only ever increases; a tap the coordinator
+  /// has not seen yet is a new request to open.
+  int _lastHandledEnterRequestId = 0;
 
   /// True while a pop-then-push title switch is between the two routes.
   /// Cleared the moment a player is open again; a delayed safety clear
@@ -244,7 +270,8 @@ class _TogetherGuestAutoOpenState extends ConsumerState<TogetherGuestAutoOpen>
     }
     // The player closed without the coordinator touching it: the guest
     // backed out. Remember which title they left, so this title is not
-    // forced on them again — a NEW title still auto-opens.
+    // forced on them again — a NEW title still auto-opens. The host is
+    // told too: this phone is not ready any more (2.13.0).
     if (!service.isPlayerOpen &&
         _openedKey != null &&
         !_opening &&
@@ -253,9 +280,30 @@ class _TogetherGuestAutoOpenState extends ConsumerState<TogetherGuestAutoOpen>
           service.roomState?.media != null) {
         _optedOutKey = guestAutoOpenKey(service.roomState!.media);
       }
+      service.reportGuestReady(false, titleKey: _openedKey);
       _openedKey = null;
     }
     final media = service.roomState?.media;
+    // Manual Enter (2.13.0): the guest's "Enter — Watch Together" tap
+    // runs the SAME open path auto-open uses — same title, same
+    // provider, same live position — so it works even when auto-open
+    // stalled or failed, and it clears the opt-out for this title (the
+    // tap IS the guest choosing to enter). A tap while this exact title
+    // is already opening does nothing: the in-flight open IS the enter.
+    if (service.guestEnterRequestId != _lastHandledEnterRequestId) {
+      _lastHandledEnterRequestId = service.guestEnterRequestId;
+      if (service.role == TogetherRole.guest &&
+          service.phase == TogetherPhase.live &&
+          media != null &&
+          !service.hostGone) {
+        final enterKey = guestAutoOpenKey(media);
+        if (!(_opening && _openingKey == enterKey)) {
+          _optedOutKey = null;
+          unawaited(_openLive(media));
+          return;
+        }
+      }
+    }
     final action = GuestAutoOpenPolicy.decide(
       role: service.role,
       phase: service.phase,
@@ -271,7 +319,9 @@ class _TogetherGuestAutoOpenState extends ConsumerState<TogetherGuestAutoOpen>
         // Adopt: the player is open on the live title without us — the
         // guest opened it by hand before Start — so treat it as ours: a
         // later host-leave closes it, and a duplicate go-live does not
-        // stack a second player.
+        // stack a second player. The host is told too (2.13.0): this
+        // phone IS ready, so a host waiting at Start releases the hold
+        // on this guest without another tap.
         if (media != null &&
             service.isPlayerOpen &&
             service.playerOpenMedia != null &&
@@ -279,6 +329,7 @@ class _TogetherGuestAutoOpenState extends ConsumerState<TogetherGuestAutoOpen>
                 guestAutoOpenKey(media)) {
           _openedKey ??= guestAutoOpenKey(media);
           _optedOutKey = null;
+          service.reportGuestReady(true, titleKey: guestAutoOpenKey(media));
         }
       case GuestAutoOpenAction.open:
         if (media == null) break;
@@ -295,9 +346,58 @@ class _TogetherGuestAutoOpenState extends ConsumerState<TogetherGuestAutoOpen>
   bool _stillCurrent(int generation) =>
       mounted && generation == _generation;
 
+  /// Writes the resolver's step to the service as the progress line the
+  /// Together screen shows, with the attempt count once retrying.
+  void _setProgress(
+    TogetherService service,
+    GuestResolveStep step,
+    int attempt,
+  ) {
+    if (!mounted) return;
+    final label = switch (step) {
+      GuestResolveStep.findingTitle => 'Finding the title…',
+      GuestResolveStep.gettingStream => 'Getting the stream…',
+      GuestResolveStep.openingPlayer => 'Opening the player…',
+    };
+    service.setGuestAutoOpenProgress(
+      attempt > 1
+          ? '$label (attempt $attempt of $kGuestAutoOpenMaxAttempts)'
+          : label,
+    );
+  }
+
+  /// What the guest received + which tier failed and why, for the
+  /// diagnostics line: the title, the provider, the host's source, the
+  /// live position, then the resolver's tier reasons.
+  String _buildDiagnostics(
+    TogetherMediaIdentity media,
+    String? tierDiagnostics,
+  ) {
+    final parts = <String>['Title: ${baseTitleOf(media)}'];
+    if (media.provider != null) parts.add('Provider: ${media.provider}');
+    if (media.source != null) parts.add('Source: ${media.source}');
+    final service = ref.read(togetherServiceProvider);
+    final liveMs = service.hostLiveTargetMs;
+    if (liveMs != null) {
+      final totalSeconds = liveMs ~/ 1000;
+      parts.add(
+        'Host at ${totalSeconds ~/ 60}:${(totalSeconds % 60).toString().padLeft(2, '0')}',
+      );
+    }
+    if (tierDiagnostics != null && tierDiagnostics.isNotEmpty) {
+      parts.add(tierDiagnostics);
+    }
+    return parts.join(' · ');
+  }
+
   /// Finishes an open attempt — but only if it is still the current one.
   /// A superseded attempt touches nothing: the newer open owns the
   /// pending / failure / notice state now.
+  ///
+  /// 2.13.0 — readiness rides along: a successful open reports this
+  /// phone ready for the title (the host's hold releases on it); a
+  /// failed open reports not-ready with the reason, so the host knows
+  /// this guest is stuck instead of waiting blind.
   void _finishOpen(
     int generation, {
     String? failure,
@@ -305,14 +405,19 @@ class _TogetherGuestAutoOpenState extends ConsumerState<TogetherGuestAutoOpen>
     String? notice,
   }) {
     if (generation != _generation) return;
+    final key = _openingKey;
     _opening = false;
     _openingKey = null;
     final service = ref.read(togetherServiceProvider);
     service.setGuestAutoOpenPending(false);
+    service.setGuestAutoOpenProgress(null);
     service.setGuestAutoOpenFailure(failure);
     if (openedKey != null) {
       _openedKey = openedKey;
       _optedOutKey = null;
+      service.reportGuestReady(true, titleKey: openedKey);
+    } else if (failure != null && key != null) {
+      service.reportGuestReady(false, titleKey: key, note: failure);
     }
     if (notice != null) {
       service.setGuestAutoOpenNotice(notice);
@@ -330,6 +435,14 @@ class _TogetherGuestAutoOpenState extends ConsumerState<TogetherGuestAutoOpen>
   }
 
   /// Resolves [media] and pushes the player for it.
+  ///
+  /// 2.13.0 — bounded + retried + honest: one attempt is capped by the
+  /// resolver's total timeout, a failed attempt is retried up to
+  /// [kGuestAutoOpenMaxAttempts] times with the attempt count in the
+  /// progress line, and only the last failure ends in the honest
+  /// message + Enter button. Progress and diagnostics are written to
+  /// the service as the open proceeds, so the Together screen shows
+  /// real steps instead of a dead spinner.
   Future<void> _openLive(TogetherMediaIdentity media) async {
     // A newer live title supersedes an open still in flight: bump the
     // generation and the older resolution abandons itself wherever it is.
@@ -339,19 +452,53 @@ class _TogetherGuestAutoOpenState extends ConsumerState<TogetherGuestAutoOpen>
     _openingKey = key;
     final service = ref.read(togetherServiceProvider);
     service.setGuestAutoOpenPending(true);
+    service.setGuestAutoOpenFailure(null);
+    service.setGuestAutoOpenDiagnostics(_buildDiagnostics(media, null));
     GuestTitleResolution? resolution;
-    try {
-      resolution = await resolveGuestTitle(
-        identity: media,
-        loadDetails: _loadDetails,
-        loadStreams: _loadStreams,
-        searchTitles: _searchTitles,
+    String? lastFailure;
+    String? lastDiagnostics;
+    for (var attempt = 1; attempt <= kGuestAutoOpenMaxAttempts; attempt++) {
+      if (!_stillCurrent(generation)) return;
+      _setProgress(service, GuestResolveStep.findingTitle, attempt);
+      try {
+        resolution = await resolveGuestTitle(
+          identity: media,
+          loadDetails: _loadDetails,
+          loadStreams: _loadStreams,
+          searchTitles: _searchTitles,
+          onProgress: (step) => _setProgress(service, step, attempt),
+        );
+        break;
+      } on GuestTitleResolutionFailure catch (e) {
+        lastFailure = e.message;
+        lastDiagnostics = e.diagnostics;
+        resolution = null;
+      } catch (_) {
+        lastFailure = kGuestTitleNotFoundMessage;
+        lastDiagnostics = null;
+        resolution = null;
+      }
+      if (!_stillCurrent(generation)) return;
+      if (attempt < kGuestAutoOpenMaxAttempts) {
+        // Retry the failing tier(s) instead of failing once: the
+        // guest's only outcomes are the player opening, or an honest
+        // message plus the Enter button — never a dead end after one
+        // failure.
+        service.setGuestAutoOpenProgress(
+          'Couldn’t open it yet — retrying… '
+          '(attempt ${attempt + 1} of $kGuestAutoOpenMaxAttempts)',
+        );
+        await Future<void>.delayed(kGuestAutoOpenRetryDelay);
+      }
+    }
+    if (resolution == null) {
+      service.setGuestAutoOpenDiagnostics(
+        _buildDiagnostics(media, lastDiagnostics),
       );
-    } on GuestTitleResolutionFailure catch (e) {
-      _finishOpen(generation, failure: e.message);
-      return;
-    } catch (_) {
-      _finishOpen(generation, failure: kGuestTitleNotFoundMessage);
+      _finishOpen(
+        generation,
+        failure: lastFailure ?? kGuestTitleNotFoundMessage,
+      );
       return;
     }
     if (!_stillCurrent(generation)) return;
@@ -509,7 +656,16 @@ class _TogetherGuestAutoOpenState extends ConsumerState<TogetherGuestAutoOpen>
       // The codebase's established read: `asData?.value` (see
       // details_controller.dart).
       final SearchAggregateState? state = next.asData?.value;
-      if (state == null || controller.isClosed) return;
+      if (controller.isClosed) return;
+      if (state == null) {
+        // A search error (AsyncError) ends the stream instead of
+        // hanging it until the resolver's absolute deadline: the
+        // resolver then falls through to the honest failure, fast.
+        if (next is AsyncError) {
+          unawaited(controller.close());
+        }
+        return;
+      }
       controller.add(
         state.results
             .expand((ProviderSearchResult result) => result.results)

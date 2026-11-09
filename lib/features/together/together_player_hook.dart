@@ -69,6 +69,18 @@ class TogetherPlayerHook {
   /// test). Set in [_maybeApplyHostState] before the decision is applied.
   SyncDecision? _lastAppliedDecision;
 
+  /// Wall-clock milliseconds of the last seek this hook applied
+  /// (2.13.0, RMHTube's 1.5 s post-seek cooldown): a seek takes time
+  /// to land, and evaluating again 500 ms later would seek twice into
+  /// the same slow seek — the cooldown downgrades a second seek
+  /// decision to "leave the engine alone" until the first one lands.
+  int? _lastSeekAtMs;
+
+  /// True while this host's playback was held waiting for a guest
+  /// (2.13.0): set when the hold is observed, cleared when the hold
+  /// releases and the engine is auto-played.
+  bool _wasHeld = false;
+
   /// Last sync decision applied to the engine, or null before the first
   /// one. Test-only read.
   @visibleForTesting
@@ -185,6 +197,11 @@ class TogetherPlayerHook {
   }
 
   /// Host: goes live at the engine's current position and transport state.
+  ///
+  /// 2.13.0 — wait-together gate: going live HELDS playback until the
+  /// first guest's player reports ready (see `TogetherService.goLive`),
+  /// so the engine is paused at the shared start position at once —
+  /// the room must not race ahead while the guest is still loading.
   void goLive() {
     final value = controller.value;
     service.goLive(
@@ -192,6 +209,15 @@ class TogetherPlayerHook {
       durationMs: value.duration.inMilliseconds,
       playing: value.isPlaying,
     );
+    if (service.hostPlaybackHeld && value.isPlaying) {
+      _wasHeld = true;
+      // The engine may be a test double or mid-teardown: a pause that
+      // cannot land is retried on the next tick, never a crash out of
+      // a sync tick (same rule as [_applyDecision]).
+      try {
+        unawaited(controller.pause());
+      } catch (_) {}
+    }
   }
 
   /// Host: records the stream source the player is actually playing
@@ -238,9 +264,48 @@ class TogetherPlayerHook {
       // rides in the live payload, so a 2× host does not leave the guest
       // chasing a 1× target. At 1× this changes nothing.
       playbackSpeed: value.playbackSpeed,
+      // 2.13.0: whether the engine is buffering rides in the live
+      // payload too, so guests freeze their projection instead of
+      // running ahead of a stalled host.
+      stalled: value.isBuffering,
     );
+    // 2.13.0 — wait-together gate (host): while held, the engine stays
+    // paused at the shared start position. This is the real gate, not a
+    // hint: a play tap, a resume or a seek past the hold is paused /
+    // sought back here, on the next engine tick at the latest — and the
+    // service never publishes `playing: true` while held either, so a
+    // stray tick can never start the room early.
+    if (service.role == TogetherRole.host && service.hostPlaybackHeld) {
+      _wasHeld = true;
+      if (value.isPlaying) {
+        // Guarded like [_applyDecision]: an engine that cannot pause
+        // (test double, mid-teardown) must not throw out of a tick —
+        // the next tick retries.
+        try {
+          unawaited(controller.pause());
+        } catch (_) {}
+        return;
+      }
+      if (value.position.inMilliseconds >
+          service.holdPositionMs + 2000) {
+        try {
+          unawaited(
+            controller.seekTo(
+              Duration(milliseconds: service.holdPositionMs),
+            ),
+          );
+        } catch (_) {}
+        return;
+      }
+      return;
+    }
     if (service.role != TogetherRole.guest || !service.isLive) return;
-    final hostPlaying = service.roomState?.playing ?? false;
+    final hostState = service.roomState;
+    // A stalled host counts as paused here too (2.13.0): a guest that
+    // stops while the host buffers is following the host, not taking a
+    // local hold.
+    final hostPlaying =
+        (hostState?.playing ?? false) && !(hostState?.stalled ?? false);
     if (!value.isPlaying &&
         !value.isBuffering &&
         hostPlaying &&
@@ -278,10 +343,11 @@ class TogetherPlayerHook {
     if (_guestLocallyPaused) return false;
     final state = service.roomState;
     if (state == null || service.hostGone) return false;
-    if (value.isPlaying != state.playing) return true;
-    final target = state.targetPositionMs(
-      nowMs: DateTime.now().millisecondsSinceEpoch,
-    );
+    // A stalled host is a paused host for transport purposes: the guest
+    // must not chase a frozen target by playing on.
+    final hostPlaying = state.playing && !state.stalled;
+    if (value.isPlaying != hostPlaying) return true;
+    final target = state.targetPositionMs(nowMs: service.hostClockNowMs());
     return (value.position.inMilliseconds - target).abs() >
         kSyncSeekThresholdMs;
   }
@@ -297,6 +363,21 @@ class TogetherPlayerHook {
           .seekTo(Duration(milliseconds: adopted))
           .whenComplete(() => _applyingRemote = false);
     }
+    // 2.13.0 — hold release (host): the first guest just reported
+    // ready, so everyone starts together from the shared start
+    // position with no extra tap. Only a READY release auto-plays:
+    // after the 20 s bound expires the host starts with a tap instead.
+    if (service.role == TogetherRole.host &&
+        service.isLive &&
+        !service.hostPlaybackHeld &&
+        _wasHeld &&
+        service.holdReleaseWasReady) {
+      _wasHeld = false;
+      _applyingRemote = true;
+      controller.play().whenComplete(() => _applyingRemote = false);
+      return;
+    }
+    if (service.hostPlaybackHeld) _wasHeld = true;
     if (service.role == TogetherRole.guest && service.isLive) {
       // A guest holding a local pause is never snapped back by an
       // incoming host state — not by a play/pause flip, not by a seek,
@@ -309,6 +390,11 @@ class TogetherPlayerHook {
     if (_guestLocallyPaused) return;
     final state = service.roomState;
     if (state == null || service.hostGone) return;
+    // Never correct into a stall of our own (2.13.0, RMHTube): while
+    // this engine is buffering, a seek or a rate change lands on a
+    // player that cannot honour it yet — the next tick after the
+    // buffer clears re-evaluates.
+    if (controller.value.isBuffering) return;
     final now = DateTime.now();
     // Evaluations are throttled — 500 ms apart normally (2.8.0, was
     // 1000 ms), so small drift is nudged twice a second instead of once.
@@ -322,18 +408,35 @@ class TogetherPlayerHook {
     final minGapMs = force ? 250 : 500;
     if (sinceLastEval != null && sinceLastEval < minGapMs) return;
     _lastGuestEvalAt = now;
-    final decision = decideSync(
+    var decision = decideSync(
       localPositionMs: controller.value.position.inMilliseconds,
       hostPositionMs: state.positionMs,
       hostTimestampMs: state.hostTimestampMs,
-      nowMs: now.millisecondsSinceEpoch,
+      nowMs: service.hostClockNowMs(),
       hostPlaying: state.playing,
       durationMs: state.durationMs,
       // 2.11.0 (Worker B's speed end-to-end): the drift correction must
       // aim at where the host is going at the host's speed — at 1× this
       // is the same target as before, at 2× it is twice as far along.
       hostPlaybackSpeed: state.playbackSpeed,
+      // 2.13.0: a stalled host freezes the target — the guest holds
+      // still instead of chasing a clock that is not moving.
+      hostStalled: state.stalled,
     );
+    // 1.5 s post-seek cooldown (2.13.0, RMHTube): a seek takes time to
+    // land, and a second seek decision before it does would seek twice
+    // into the same slow seek. The transport still applies (a pause
+    // during the cooldown is still honoured); only the jump waits.
+    if (decision.action == SyncAction.seek && _lastSeekAtMs != null) {
+      final sinceSeek = now.millisecondsSinceEpoch - _lastSeekAtMs!;
+      if (sinceSeek < 1500) {
+        decision = SyncDecision(
+          action: SyncAction.inSync,
+          targetPositionMs: decision.targetPositionMs,
+          rate: state.playbackSpeed,
+        );
+      }
+    }
     _lastAppliedDecision = decision;
     unawaited(_applyDecision(decision, state));
   }
@@ -353,15 +456,19 @@ class TogetherPlayerHook {
         _appliedRate = targetRate;
       }
       if (decision.action == SyncAction.seek) {
+        _lastSeekAtMs = DateTime.now().millisecondsSinceEpoch;
         await controller.seekTo(
           Duration(milliseconds: decision.targetPositionMs),
         );
       }
       // Then the transport, to match the host: a guest that is paused
-      // while the host plays is a guest that is falling behind.
-      if (state.playing && !value.isPlaying) {
+      // while the host plays is a guest that is falling behind. A
+      // stalled host counts as paused (2.13.0): the guest holds still
+      // while the host buffers, and resumes when the host does.
+      final hostPlaying = state.playing && !state.stalled;
+      if (hostPlaying && !value.isPlaying) {
         await controller.play();
-      } else if (!state.playing && value.isPlaying) {
+      } else if (!hostPlaying && value.isPlaying) {
         await controller.pause();
       }
     } catch (_) {

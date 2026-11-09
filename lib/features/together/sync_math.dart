@@ -28,6 +28,21 @@ import 'dart:math';
 ///   guest chased a 1x target would fall behind by a second every second
 ///   and seek forever.
 ///
+/// 2.13.0 — ladder vs the published open-source ladders (research):
+/// SyncStream uses <100 ms ignore / 100–500 ms nudge at 0.98×/1.02× /
+/// >500 ms seek, RMHTube uses ≤500 ms settled / ±5% nudge / >2 s seek
+/// with a 1.5 s seek cooldown, PeerMates uses ≤500 ms settled / ±8%
+/// nudge to 3 s / one debounced seek above that. This app KEEPS
+/// 150 ms / 750 ms / ±5%: tighter than the web ladders, because the room
+/// is 2–6 phones on VLC (not 500 browser viewers) and a 500 ms dead band
+/// is a visible lip-sync error on a phone held close — while the 750 ms
+/// seek threshold (vs SyncStream's 500 ms) still keeps ordinary
+/// 300–500 ms round-trips from seeking on every state. What IS adopted
+/// from the research: the 1.5 s post-seek cooldown (RMHTube — never seek
+/// twice into one slow seek), never seeking into a stall ([hostStalled]
+/// freezes the target, RMHTube §6), and at most one correction per
+/// evaluation tick (every implementation agrees).
+///
 /// Latency honesty (2.11.0): nothing here is zero-latency. A host action
 /// reaches a guest in one relay round-trip (EMQX measured ~200 ms in the
 /// 2.10.0 live test), and the numbers above are the correction budgets
@@ -76,6 +91,11 @@ const int kSyncSeekExcessMs = 400;
 /// and no clamping happens). The one place the target math lives:
 /// [decideSync], [decideResumeSync] and the service's resume target all
 /// read it, so they can never disagree about where "live" is.
+///
+/// [hostStalled] (2.13.0): the host's engine is buffering — the target
+/// freezes at the stamped position instead of advancing through the
+/// stall (RMHTube §6: projecting through a stall runs the room ahead
+/// and rubber-bands it back).
 int liveTargetMs({
   required int hostPositionMs,
   required int hostTimestampMs,
@@ -83,8 +103,9 @@ int liveTargetMs({
   required bool hostPlaying,
   double hostPlaybackSpeed = 1.0,
   required int durationMs,
+  bool hostStalled = false,
 }) {
-  var target = hostPlaying
+  var target = hostPlaying && !hostStalled
       ? hostPositionMs +
             ((nowMs - hostTimestampMs) * hostPlaybackSpeed).round()
       : hostPositionMs;
@@ -166,6 +187,7 @@ SyncDecision decideSync({
   required bool hostPlaying,
   required int durationMs,
   double hostPlaybackSpeed = 1.0,
+  bool hostStalled = false,
 }) {
   final target = liveTargetMs(
     hostPositionMs: hostPositionMs,
@@ -174,6 +196,7 @@ SyncDecision decideSync({
     hostPlaying: hostPlaying,
     hostPlaybackSpeed: hostPlaybackSpeed,
     durationMs: durationMs,
+    hostStalled: hostStalled,
   );
 
   final driftMs = target - localPositionMs;
@@ -221,6 +244,7 @@ SyncDecision decideResumeSync({
   required bool hostPlaying,
   required int durationMs,
   double hostPlaybackSpeed = 1.0,
+  bool hostStalled = false,
 }) {
   final target = liveTargetMs(
     hostPositionMs: hostPositionMs,
@@ -229,6 +253,7 @@ SyncDecision decideResumeSync({
     hostPlaying: hostPlaying,
     hostPlaybackSpeed: hostPlaybackSpeed,
     durationMs: durationMs,
+    hostStalled: hostStalled,
   );
   if ((target - localPositionMs).abs() >= kSyncNudgeThresholdMs) {
     return SyncDecision(

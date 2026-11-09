@@ -44,6 +44,10 @@ void main() {
 
   /// Host in a live room with the publish sink attached, so every publish
   /// is captured. Returns the (host, captured-publishes) pair.
+  ///
+  /// 2.13.0: `goLive` HELDS playback until the first guest reports
+  /// ready, so the helper feeds a ready guest straight away — the room
+  /// under test is live and playing, as before.
   (TogetherService, List<Map<String, dynamic>>) liveHostWithSink() {
     final host = newService();
     final published = <Map<String, dynamic>>[];
@@ -53,6 +57,17 @@ void main() {
     host.debugEnterRoomForTest(role: TogetherRole.host, otp: '123456');
     host.attachMedia(mediaA);
     host.goLive(positionMs: 0, durationMs: 600000, playing: true);
+    host.debugReceivePayloadForTest(
+      jsonEncode(
+        TogetherGuestReadyMessage(
+          ready: true,
+          senderId: 'guest-1',
+          timestampMs: DateTime.now().millisecondsSinceEpoch,
+          displayName: 'sonali',
+          titleKey: togetherTitleKey(mediaA),
+        ).toJson(),
+      ),
+    );
     published.clear(); // goLive's own publish is not under test here
     return (host, published);
   }
@@ -205,11 +220,23 @@ void main() {
       host.debugEnterRoomForTest(role: TogetherRole.host, otp: '123456');
       host.attachMedia(mediaA);
       host.goLive(positionMs: 42000, durationMs: 600000, playing: true);
-      final states = published.where((p) => p['kind'] == 'state').toList();
+      // 2.13.0: Start publishes immediately — but HELD, paused at the
+      // start position, until the first guest reports ready. The hold
+      // itself is the first retained state (one publish, no heartbeat
+      // wait); the guest-ready release is the second, playing at the
+      // same position.
+      var states = published.where((p) => p['kind'] == 'state').toList();
       expect(states.length, 1);
       expect(states.single['positionMs'], 42000);
-      expect(states.single['playing'], isTrue);
+      expect(states.single['playing'], isFalse);
+      expect(states.single['held'], isTrue);
       expect(states.single['_retain'], isTrue);
+      host.debugGuestReadyForTest();
+      states = published.where((p) => p['kind'] == 'state').toList();
+      expect(states.length, 2);
+      expect(states.last['playing'], isTrue);
+      expect(states.last['positionMs'], 42000);
+      expect(states.last['_retain'], isTrue);
     });
   });
 
@@ -617,15 +644,16 @@ void main() {
       host.debugEnterRoomForTest(role: TogetherRole.host, otp: '123456');
       host.attachMedia(dexterMedia);
       host.goLive(positionMs: 14000, durationMs: 3084000, playing: true);
+      host.debugGuestReadyForTest();
       final states = published.where((p) => p['kind'] == 'state').toList();
-      expect(states.length, 1);
-      final media = states.single['media'] as Map<String, dynamic>;
+      expect(states.length, 2);
+      final media = states.last['media'] as Map<String, dynamic>;
       expect(media['title'], 'Dexter: Resurrection · S1 E1');
 
       final guest = newService();
       addTearDown(guest.dispose);
       guest.debugEnterRoomForTest(role: TogetherRole.guest, otp: '123456');
-      guest.debugReceivePayloadForTest(jsonEncode(states.single));
+      guest.debugReceivePayloadForTest(jsonEncode(states.last));
       expect(guest.phase, TogetherPhase.live);
       expect(guest.currentMedia?.title, 'Dexter: Resurrection · S1 E1');
       expect(guest.roomState?.positionMs, 14000);

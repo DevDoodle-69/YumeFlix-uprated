@@ -304,6 +304,16 @@ class TogetherMediaIdentity {
 ///
 /// One message, always the latest: a phone that joins late reads this single
 /// retained message and knows instantly what is playing and where.
+///
+/// 2.13.0 — the anchor (research: RMHTube / SyncStream / Synkly): one
+/// complete state snapshot with a monotonic [sequence] (the epoch/rev —
+/// stale sequences are dropped), projected forward by wall-clock time
+/// ([targetPositionMs]). No bare play/pause/seek edge events travel the
+/// relay: a status or heartbeat that disagrees with this anchor is a stale
+/// hint, never an update (see the freshness rule in `TogetherService`).
+/// [held] is part of the anchor (the wait-together gate) and [stalled]
+/// freezes the projection while the host's engine is buffering, so the
+/// room never runs ahead of a stalled host and rubber-bands back.
 class TogetherRoomState {
   const TogetherRoomState({
     required this.media,
@@ -315,6 +325,8 @@ class TogetherRoomState {
     required this.hostId,
     this.playbackSpeed = 1.0,
     this.createdAtMs = 0,
+    this.held = false,
+    this.stalled = false,
   });
 
   final TogetherMediaIdentity media;
@@ -354,10 +366,24 @@ class TogetherRoomState {
 
   /// Where the host would be now, if it kept playing from this state —
   /// at the host's speed, so a 2x host's target moves twice as fast as
-  /// the wall clock.
-  int targetPositionMs({required int nowMs}) => playing
+  /// the wall clock. Frozen while [held] (the wait-together gate: the
+  /// room has not started yet) or [stalled] (the host's engine is
+  /// buffering — projecting through a stall is how a room runs ahead
+  /// and rubber-bands back).
+  int targetPositionMs({required int nowMs}) => playing && !held && !stalled
       ? positionMs + ((nowMs - hostTimestampMs) * playbackSpeed).round()
       : positionMs;
+
+  /// True while the host is holding playback at the shared start
+  /// position until the first guest's player reports ready (2.13.0
+  /// wait-together gate). Guests keep their players paused at this
+  /// position until the hold releases; the hold releasing is a fresh
+  /// state with `held: false` and `playing: true`.
+  final bool held;
+
+  /// True while the host's engine is buffering (2.13.0): the projection
+  /// freezes at [positionMs] instead of advancing through the stall.
+  final bool stalled;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
     'media': media.toJson(),
@@ -369,6 +395,8 @@ class TogetherRoomState {
     'hostId': hostId,
     'playbackSpeed': playbackSpeed,
     if (createdAtMs > 0) 'createdAtMs': createdAtMs,
+    if (held) 'held': held,
+    if (stalled) 'stalled': stalled,
   };
 
   factory TogetherRoomState.fromJson(Map<String, dynamic> json) =>
@@ -384,25 +412,21 @@ class TogetherRoomState {
         hostId: (json['hostId'] as String?) ?? '',
         playbackSpeed: (json['playbackSpeed'] as num?)?.toDouble() ?? 1.0,
         createdAtMs: (json['createdAtMs'] as num?)?.toInt() ?? 0,
+        held: json['held'] as bool? ?? false,
+        stalled: json['stalled'] as bool? ?? false,
       );
 }
 
 /// One chat message in a Together room.
 ///
-/// Text or an image, never both; an optional reply quotes the message
-/// it answers. Images travel CHUNKED over the same relay topic (see
-/// `chat_image_chunks.dart`): up to 5 MB, split into 32 KiB pieces with
-/// a SHA-256 check on reassembly — never one giant message. By the time
-/// a message with [imageBase64] exists in a list, its bytes are complete
-/// and verified; a transfer still missing pieces is not a message yet
-/// (see [TogetherService.imageTransfers]).
+/// Text only (2.13.0 — image sending was removed): an optional reply
+/// quotes the message it answers.
 class TogetherChatMessage {
   const TogetherChatMessage({
     required this.id,
     required this.senderId,
     required this.senderLabel,
     this.text,
-    this.imageBase64,
     this.replyToId,
     this.replyToText,
     required this.timestampMs,
@@ -420,11 +444,8 @@ class TogetherChatMessage {
   /// Display label: `You` for own messages, `Friend` for the other phone.
   final String senderLabel;
 
-  /// Text body, when this is a text message.
+  /// Text body of the message.
   final String? text;
-
-  /// Base64-encoded downscaled image bytes, when this is an image message.
-  final String? imageBase64;
 
   /// Id of the message this replies to, when replying.
   final String? replyToId;
@@ -446,12 +467,9 @@ class TogetherChatMessage {
   /// back to [senderLabel].
   final String? senderRole;
 
-  bool get isImage => imageBase64 != null;
-
-  /// Short quote for a reply: the text, or `Photo` for an image.
+  /// Short quote for a reply: the text, or empty when there is none.
   String get quoteText {
     if (text != null && text!.isNotEmpty) return text!;
-    if (isImage) return 'Photo';
     return '';
   }
 
@@ -460,7 +478,6 @@ class TogetherChatMessage {
     'senderId': senderId,
     'senderLabel': senderLabel,
     if (text != null) 'text': text,
-    if (imageBase64 != null) 'imageBase64': imageBase64,
     if (replyToId != null) 'replyToId': replyToId,
     if (replyToText != null) 'replyToText': replyToText,
     'timestampMs': timestampMs,
@@ -474,7 +491,6 @@ class TogetherChatMessage {
         senderId: (json['senderId'] as String?) ?? '',
         senderLabel: (json['senderLabel'] as String?) ?? 'Friend',
         text: json['text'] as String?,
-        imageBase64: json['imageBase64'] as String?,
         replyToId: json['replyToId'] as String?,
         replyToText: json['replyToText'] as String?,
         timestampMs: (json['timestampMs'] as num?)?.toInt() ?? 0,
@@ -507,6 +523,13 @@ String togetherChatSenderDisplayName(
 /// playback state, so a late guest learns the status from the host's
 /// re-publish (triggered by the guest's presence `joined`) and from the
 /// host's heartbeats, which carry the current status too.
+///
+/// 2.13.0 — [hostWaitingGuests]: the host pressed Start but playback is
+/// HELD until the first guest's player reports ready (the wait-together
+/// gate). It is a real status, not a play/pause claim: the guest's live
+/// screen shows it while the room waits, and it never overwrites the
+/// retained state's playing flag (see the freshness rule in
+/// `TogetherService`).
 enum TogetherRoomStatus {
   /// Host created the room and has not picked a title yet.
   hostBrowsing,
@@ -519,6 +542,12 @@ enum TogetherRoomStatus {
 
   /// Host pressed Start and playback is paused.
   hostPaused,
+
+  /// Host pressed Start and playback is HELD until the first guest's
+  /// player reports ready (2.13.0 wait-together gate). The host's player
+  /// stays paused at the shared start position; the moment the first
+  /// guest is ready, everyone starts together from that position.
+  hostWaitingGuests,
 
   /// The host left the room (or went silent) — set LOCALLY by the guest
   /// when it learns the host is gone (`bye`, presence `left`, 8 s of
@@ -545,6 +574,8 @@ enum TogetherRoomStatus {
     TogetherRoomStatus.hostPickedTitle => 'Host picked a title',
     TogetherRoomStatus.hostPlaying => 'Host is playing',
     TogetherRoomStatus.hostPaused => 'Host paused',
+    TogetherRoomStatus.hostWaitingGuests =>
+      'Waiting for guests to join playback…',
     TogetherRoomStatus.hostLeft => 'Host left the room',
   };
 }
@@ -609,6 +640,72 @@ class TogetherRoomStatusMessage {
   }
 }
 
+/// One guest-readiness report (2.13.0 wait-together barrier, after
+/// Plex's Invited → Buffering → Ready lobby and Jellyfin's
+/// Buffering / Ready): a guest tells the host its player is actually
+/// open on the live title (`ready: true`, with the title key it opened),
+/// or that it could not open it (`ready: false`, with the honest reason
+/// in [note]).
+///
+/// Non-retained, sent when the readiness changes. The host is the only
+/// consumer: the first `ready: true` for the live title releases the
+/// hold and starts everyone together; a `ready: false` only ever
+/// informs the host — it never releases or extends the hold. A guest
+/// that never reports (an old client) simply never releases the hold,
+/// and the 20 s bound covers it.
+class TogetherGuestReadyMessage {
+  const TogetherGuestReadyMessage({
+    required this.ready,
+    required this.senderId,
+    required this.timestampMs,
+    this.displayName,
+    this.titleKey,
+    this.note,
+  });
+
+  /// True when this guest's player is open on the live title.
+  final bool ready;
+
+  /// MQTT client id of the guest that reported.
+  final String senderId;
+
+  /// Wall-clock milliseconds when the report was sent.
+  final int timestampMs;
+
+  /// The guest's typed name, for the host's waiting list.
+  final String? displayName;
+
+  /// The open key of the title this guest's player opened (see
+  /// `guestAutoOpenKey`), or null when the guest predates it. The host
+  /// only counts readiness whose key matches the live title (or has no
+  /// key at all) — a guest ready for yesterday's title does not release
+  /// today's hold.
+  final String? titleKey;
+
+  /// Why the guest could not open the title, when [ready] is false.
+  final String? note;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'kind': 'guest-ready',
+    'ready': ready,
+    'senderId': senderId,
+    'timestampMs': timestampMs,
+    if (displayName != null) 'displayName': displayName,
+    if (titleKey != null) 'titleKey': titleKey,
+    if (note != null) 'note': note,
+  };
+
+  factory TogetherGuestReadyMessage.fromJson(Map<String, dynamic> json) =>
+      TogetherGuestReadyMessage(
+        ready: json['ready'] as bool? ?? false,
+        senderId: (json['senderId'] as String?) ?? '',
+        timestampMs: (json['timestampMs'] as num?)?.toInt() ?? 0,
+        displayName: json['displayName'] as String?,
+        titleKey: json['titleKey'] as String?,
+        note: json['note'] as String?,
+      );
+}
+
 /// One presence event: a phone entering or leaving the room.
 ///
 /// Published (non-retained) by every member right after subscribing and
@@ -658,6 +755,19 @@ class TogetherPresenceEvent {
         displayName: json['displayName'] as String?,
       );
 }
+
+/// The open key for a live title: TMDB id, base title, episode label,
+/// source label and episode token. Two states with the same key are the
+/// same open — a re-publish, a duplicate go-live, a rejoin. Shared by
+/// the guest auto-open coordinator and the wait-together readiness
+/// check, so both agree on what "the same title" means.
+String togetherTitleKey(TogetherMediaIdentity media) => <String>[
+  media.tmdbId?.toString() ?? '',
+  media.title.replaceFirst(RegExp(r' · S\d+ E\d+$'), '').trim(),
+  media.episodeLabel ?? '',
+  media.source ?? '',
+  media.episodeUrl ?? '',
+].join('|');
 
 /// The host turning a joiner away: the room already has
 /// [kTogetherMaxGuests] guests. Carries the rejected phone's client id so

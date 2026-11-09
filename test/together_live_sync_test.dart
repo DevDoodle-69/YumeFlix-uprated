@@ -132,6 +132,7 @@ void main() {
     host.debugEnterRoomForTest(role: TogetherRole.host, otp: '123456');
     host.attachMedia(media);
     host.goLive(positionMs: 0, durationMs: 600000, playing: true);
+    host.debugGuestReadyForTest();
     published.clear();
     return (host, published);
   }

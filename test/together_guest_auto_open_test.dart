@@ -557,7 +557,8 @@ void main() {
   });
 
   group('go-live payload carries everything the guest needs', () {
-    test('host go-live state carries provider + source + episode URL + S/E', () {
+    test('host go-live state carries provider + source + episode URL + S/E',
+        () {
       final host = newService();
       addTearDown(host.dispose);
       final published = <Map<String, dynamic>>[];
@@ -569,8 +570,28 @@ void main() {
       host.registerOrbStartAction(() {});
       host.reportLocalPlayback(positionMs: 0, durationMs: 600000, playing: true);
       host.goLive(positionMs: 12000, durationMs: 600000, playing: true);
-      final states = published.where((p) => p['kind'] == 'state').toList();
+      // 2.13.0: Start HELDS playback until the first guest reports
+      // ready — the go-live state is paused at the start position,
+      // held, with the full identity on it.
+      var states = published.where((p) => p['kind'] == 'state').toList();
       expect(states, isNotEmpty);
+      expect(states.last['playing'], isFalse);
+      expect(states.last['held'], isTrue);
+      expect(states.last['positionMs'], 12000);
+      // The first guest's ready report releases the hold at the same
+      // position — everyone starts together from there.
+      host.debugReceivePayloadForTest(
+        jsonEncode(
+          TogetherGuestReadyMessage(
+            ready: true,
+            senderId: 'guest-1',
+            timestampMs: DateTime.now().millisecondsSinceEpoch,
+            displayName: 'sonali',
+            titleKey: togetherTitleKey(episodeMedia),
+          ).toJson(),
+        ),
+      );
+      states = published.where((p) => p['kind'] == 'state').toList();
       final media = states.last['media'] as Map<String, dynamic>;
       expect(media['provider'], 'MovieSubLK');
       expect(media['source'], 'Server 1');

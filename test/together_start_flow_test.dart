@@ -92,17 +92,31 @@ void main() {
 
       // No await anywhere: the flip and the publish happen before this
       // call returns, so the button vanishes in the same rebuild.
+      // 2.13.0: Start publishes HELD (paused at the start position,
+      // waiting for the first guest) — the phase is live and the Start
+      // control is gone from the first publish; the guest-ready release
+      // is the second publish, playing at the same position.
       host.goLive(positionMs: 14000, durationMs: 600000, playing: true);
       expect(host.phase, TogetherPhase.live);
       expect(host.startState, TogetherStartState.live);
       expect(host.showStartButton, isFalse);
+      expect(host.isShowingLive, isFalse);
 
-      final states = statesOf(published);
+      var states = statesOf(published);
       expect(states.length, 1);
-      expect(states.single['playing'], isTrue);
+      expect(states.single['playing'], isFalse);
+      expect(states.single['held'], isTrue);
       expect(states.single['positionMs'], 14000);
       expect(states.single['_retain'], isTrue);
-      final media = states.single['media'] as Map<String, dynamic>;
+
+      host.debugGuestReadyForTest();
+      expect(host.isShowingLive, isTrue);
+      states = statesOf(published);
+      expect(states.length, 2);
+      expect(states.last['playing'], isTrue);
+      expect(states.last['positionMs'], 14000);
+      expect(states.last['_retain'], isTrue);
+      final media = states.last['media'] as Map<String, dynamic>;
       expect(media['title'], 'Dune');
       expect(media['tmdbType'], 'movie');
     });
@@ -152,18 +166,19 @@ void main() {
         playing: true,
       );
       host.goLive(positionMs: 14000, durationMs: 600000, playing: true);
+      host.debugGuestReadyForTest();
 
       final states = statesOf(published);
-      expect(states.length, 1);
+      expect(states.length, 2);
       expect(
-        (states.single['media'] as Map)['title'],
+        (states.last['media'] as Map)['title'],
         isNot(contains(RegExp(r'S\d+ E\d+'))),
       );
 
       final guest = newService();
       addTearDown(guest.dispose);
       guest.debugEnterRoomForTest(role: TogetherRole.guest, otp: '123456');
-      deliverToGuest(guest, states.single);
+      deliverToGuest(guest, states.last);
       expect(guest.phase, TogetherPhase.live);
       expect(guest.isLive, isTrue);
       expect(guest.currentMedia?.title, 'Dune');
@@ -190,17 +205,18 @@ void main() {
         playing: true,
       );
       host.goLive(positionMs: 14000, durationMs: 3084000, playing: true);
+      host.debugGuestReadyForTest();
 
       final states = statesOf(published);
-      expect(states.length, 1);
-      final stateMedia = states.single['media'] as Map<String, dynamic>;
+      expect(states.length, 2);
+      final stateMedia = states.last['media'] as Map<String, dynamic>;
       expect(stateMedia['title'], 'Dexter: Resurrection · S1 E1');
       expect(stateMedia['episodeLabel'], 'S1 E1');
 
       final guest = newService();
       addTearDown(guest.dispose);
       guest.debugEnterRoomForTest(role: TogetherRole.guest, otp: '123456');
-      deliverToGuest(guest, states.single);
+      deliverToGuest(guest, states.last);
       expect(guest.phase, TogetherPhase.live);
       expect(guest.currentMedia?.title, 'Dexter: Resurrection · S1 E1');
       expect(guest.currentMedia?.episodeLabel, 'S1 E1');
@@ -249,6 +265,7 @@ void main() {
         playing: true,
       );
       host.goLive(positionMs: 14000, durationMs: 3084000, playing: true);
+      host.debugGuestReadyForTest();
       published.clear();
 
       // The episode advance: the hook re-points the room at S1 E2.
@@ -271,7 +288,7 @@ void main() {
       final guest = newService();
       addTearDown(guest.dispose);
       guest.debugEnterRoomForTest(role: TogetherRole.guest, otp: '123456');
-      deliverToGuest(guest, states.single);
+      deliverToGuest(guest, states.last);
       expect(guest.phase, TogetherPhase.live);
       expect(guest.currentMedia?.title, 'Dexter: Resurrection · S1 E2');
       expect(guest.roomState?.positionMs, 0);

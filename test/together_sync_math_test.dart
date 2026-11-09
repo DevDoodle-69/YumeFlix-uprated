@@ -354,7 +354,7 @@ void main() {
       );
     });
 
-    test('chat message round-trip keeps reply and image fields', () {
+    test('chat message round-trip keeps reply fields', () {
       const message = TogetherChatMessage(
         id: 'yumeflix-1-1',
         senderId: 'yumeflix-1',
@@ -372,7 +372,6 @@ void main() {
       expect(decoded.text, 'that scene 😮');
       expect(decoded.replyToId, 'yumeflix-2-0');
       expect(decoded.replyToText, 'here it comes');
-      expect(decoded.isImage, isFalse);
       expect(decoded.quoteText, 'that scene 😮');
     });
   });

@@ -84,6 +84,7 @@ void main() {
       host.debugEnterRoomForTest(role: TogetherRole.host, otp: '123456');
       host.attachMedia(episodeMedia);
       host.goLive(positionMs: 120000, durationMs: 5400000, playing: true);
+      host.debugGuestReadyForTest();
       final states = published.where((p) => p['kind'] == 'state').toList();
       expect(states, isNotEmpty);
       final state = states.last;

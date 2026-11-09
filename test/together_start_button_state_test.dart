@@ -134,6 +134,18 @@ void main() {
 
       host.goLive(positionMs: 1000, durationMs: 600000, playing: true);
       expect(host.phase, TogetherPhase.live);
+      // 2.13.0: Start holds playback until the first guest is ready —
+      // the room is live and the Start control is gone from the first
+      // publish, but nothing is playing yet, so Live stays hidden and
+      // the hold label is what the host sees.
+      expect(host.isShowingLive, isFalse);
+      expect(host.startState, TogetherStartState.live);
+      expect(host.showStartButton, isFalse);
+      expect(host.hostPlaybackHeld, isTrue);
+
+      // The first guest's player reports ready: everyone starts
+      // together, and Live appears with no second Start tap.
+      host.debugGuestReadyForTest();
       expect(host.isShowingLive, isTrue);
       expect(host.startState, TogetherStartState.live);
       expect(host.showStartButton, isFalse);
@@ -273,12 +285,26 @@ void main() {
       await tester.pump();
 
       expect(service.phase, TogetherPhase.live);
-      expect(service.isShowingLive, isTrue);
+      // 2.13.0: Start holds until the first guest is ready — the room
+      // is live and the Start control is gone from the tap, but nothing
+      // is playing yet, so Live stays hidden and the orb stays hidden
+      // too (the room has started; the hold is shown by the hold pill
+      // in the player, not by a floating pill).
+      expect(service.isShowingLive, isFalse);
+      expect(service.startState, TogetherStartState.live);
       expect(find.text('Start'), findsNothing);
       expect(find.text('Ready to start'), findsNothing);
       // 2.10.0, Bug 1: no floating Live pill anywhere — the Live status
       // lives only in the player control panel now, so the orb (mounted
       // above the router) renders nothing at all while live.
+      expect(find.text('Live'), findsNothing);
+      expect(find.text('Enjoy Together'), findsNothing);
+
+      // The first guest's player reports ready: everyone starts
+      // together, Live appears, and the orb stays hidden.
+      service.debugGuestReadyForTest();
+      await tester.pump();
+      expect(service.isShowingLive, isTrue);
       expect(find.text('Live'), findsNothing);
       expect(find.text('Enjoy Together'), findsNothing);
     });

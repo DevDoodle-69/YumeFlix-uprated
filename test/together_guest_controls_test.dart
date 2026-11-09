@@ -98,6 +98,7 @@ void main() {
       host.registerOrbStartAction(() {});
       host.reportLocalPlayback(positionMs: 0, durationMs: 600000, playing: true);
       host.goLive(positionMs: 12000, durationMs: 600000, playing: true);
+      host.debugGuestReadyForTest();
       published.clear();
       host.reportLocalPlayback(positionMs: 12000, durationMs: 600000, playing: false);
       final states = published.where((p) => p['kind'] == 'state').toList();
@@ -119,6 +120,7 @@ void main() {
       host.registerOrbStartAction(() {});
       host.reportLocalPlayback(positionMs: 0, durationMs: 600000, playing: true);
       host.goLive(positionMs: 12000, durationMs: 600000, playing: true);
+      host.debugGuestReadyForTest();
       final hook = TogetherPlayerHook(
         service: host,
         controller: VlcPlayerController(),
@@ -335,6 +337,7 @@ void main() {
       host.registerOrbStartAction(() {});
       host.reportLocalPlayback(positionMs: 0, durationMs: 600000, playing: true);
       host.goLive(positionMs: 12000, durationMs: 600000, playing: true);
+      host.debugGuestReadyForTest();
       published.clear();
       host.attachMedia(mediaA.withSource('Server 2'));
       final states = published.where((p) => p['kind'] == 'state').toList();
@@ -355,6 +358,7 @@ void main() {
       host.registerOrbStartAction(() {});
       host.reportLocalPlayback(positionMs: 0, durationMs: 600000, playing: true);
       host.goLive(positionMs: 12000, durationMs: 600000, playing: true);
+      host.debugGuestReadyForTest();
       published.clear();
       const other = TogetherMediaIdentity(
         title: 'Interstellar',
